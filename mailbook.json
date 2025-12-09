@@ -1,0 +1,44 @@
+{
+  "전체": [
+    {
+      "use": true,
+      "office": "직할",
+      "name": "전병훈",
+      "id": "jeon.bh",
+      "domain": "kepco.co.kr",
+      "email": "jeon.bh@kepco.co.kr"
+    },
+    {
+      "use": true,
+      "office": "남대구지사",
+      "name": "김세진",
+      "id": "zzoajbh",
+      "domain": "naver.com",
+      "email": "zzoajbh@naver.com"
+    }
+  ],
+  "직할": [],
+  "동대구지사": [],
+  "경주지사": [],
+  "남대구지사": [],
+  "서대구지사": [],
+  "포항지사": [],
+  "경산지사": [
+    {
+      "use": true,
+      "office": "경산지사",
+      "name": "전병훈",
+      "id": "jeon.bh",
+      "domain": "kepco.co.kr",
+      "email": "jeon.bh@kepco.co.kr"
+    }
+  ],
+  "김천지사": [],
+  "영천지사": [],
+  "칠곡지사": [],
+  "성주지사": [],
+  "청도지사": [],
+  "북포항지사": [],
+  "고령지사": [],
+  "영덕지사": []
+}

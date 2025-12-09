@@ -1,0 +1,13 @@
+SQLAlchemy>=2.0
+streamlit
+streamlit-aggrid
+pandas
+numpy
+requests
+lxml
+openpyxl
+certifi
+urllib3
+typing-extensions
+extra-streamlit-components
+psycopg2-binary==2.9.9
