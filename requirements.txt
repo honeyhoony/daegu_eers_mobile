@@ -10,4 +10,5 @@ certifi
 urllib3
 typing-extensions
 extra-streamlit-components
-psycopg2-binary==2.9.9
+pg8000
+
