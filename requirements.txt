@@ -10,6 +10,4 @@ certifi
 urllib3
 typing-extensions
 extra-streamlit-components
-psycopg2-binary
 pg8000
-
