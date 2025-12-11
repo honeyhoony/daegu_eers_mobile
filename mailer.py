@@ -211,7 +211,7 @@ def send_mail(
     mail_user: str,
     mail_pass: str
 ):
-    """Gmail TLS handshake 안정화를 위한 개선 버전"""
+    """Gmail STARTTLS 버전 (Fly 환경에서 정상 작동 검증됨)"""
     import time
 
     msg = EmailMessage()
@@ -219,7 +219,7 @@ def send_mail(
     msg["From"] = mail_from
     msg["To"] = ", ".join(to_list)
 
-    # HTML 본문
+    # 본문
     msg.set_content("HTML 지원이 필요합니다.", subtype="plain")
     msg.add_alternative(html_body, subtype="html")
 
@@ -237,8 +237,8 @@ def send_mail(
     try:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.ehlo()
-            server.connect(smtp_host, smtp_port)  # 명시적으로 연결
-            time.sleep(0.5)                        # TLS 안정화 대기
+            # ❌ 아래 줄 제거! server.connect() 절대 호출하지 말 것
+            time.sleep(0.5)
             server.starttls(context=context)
             server.ehlo()
             time.sleep(0.5)
