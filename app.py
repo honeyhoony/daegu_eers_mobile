@@ -91,7 +91,10 @@ SIX_MONTHS = timedelta(days=30 * 6)
 
 import streamlit as st
 import logging
-from config import SUPABASE_DATABASE_URL
+import os
+
+SUPABASE_DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL")
+
 
 logger = logging.getLogger(__name__)
 
