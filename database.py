@@ -7,6 +7,9 @@ from sqlalchemy import (
     DateTime, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
+from sqlalchemy.pool import NullPool
 
 # ─────────────────────────────────────────
 # 1) Base 선언
@@ -101,14 +104,13 @@ def get_engine_and_session(db_url: str):
     # 따로 connect_args 안 쓰고 URL만 넘김
     engine = create_engine(
         db_url,
+        poolclass=NullPool,
         pool_pre_ping=True,
-        echo=False,
+        connect_args={"sslmode": "require"},
     )
 
-    # 테이블 자동 생성
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     Base.metadata.create_all(engine)
-
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal
 
 # ─────────────────────────────────────────
@@ -176,3 +178,9 @@ def _kea_cache_set(session, model: str, flag: int):
             "ts": datetime.utcnow().isoformat(timespec="seconds")
         }
     )
+    
+import os
+
+db_url = os.getenv("SUPABASE_DATABASE_URL")
+engine, SessionLocal = get_engine_and_session(db_url)
+
