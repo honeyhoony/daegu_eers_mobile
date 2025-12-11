@@ -53,14 +53,6 @@ def _cfg(name, default=None):
 DATABASE_URL = _cfg("DATABASE_URL", "")    
 
 
-
-
-
-
-
-
-
-
 # 1) 환경변수(Fly.io, Docker)를 최우선
 env_db_url = os.environ.get("SUPABASE_DATABASE_URL")
 
@@ -124,19 +116,24 @@ try:
     )
     from mailer import send_mail, build_subject, build_body_html, build_attachment_html
 
-    # 🚨 DB 초기화 섹션 🚨
-    # SUPABASE_DATABASE_URL이 있을 경우에만 실제 엔진/세션을 생성하고 전역 변수를 덮어씁니다.
     if SUPABASE_DATABASE_URL:
-        logger.info("Connecting to Supabase PostgreSQL...")
-        # get_engine_and_session 함수를 사용하여 실제 연결 생성
-        _engine, _SessionLocal = get_engine_and_session(SUPABASE_DATABASE_URL)
-        
-        # 전역 변수를 실제 연결 객체로 덮어씁니다.
+        logger.info("Connecting to Supabase PostgreSQL (cached)...")
+
+        # ✅ 캐시된 엔진/세션팩토리 사용 (Streamlit rerun 시에도 재사용)
+        @st.cache_resource
+        def get_engine_cached():
+            from database import get_engine_and_session
+            return get_engine_and_session(SUPABASE_DATABASE_URL)
+
+        _engine, _SessionLocal = get_engine_cached()
+
+        # 전역 변수로 바인딩
         engine = _engine
         SessionLocal = _SessionLocal
-        logger.info("Database connection successful and metadata loaded.")
+
+        logger.info("Database connection successful and metadata loaded (cached).")
+
     else:
-         # 이 경우는 0. config/Secrets 섹션에서 이미 st.error를 띄웠습니다.
         logger.warning("SUPABASE_DATABASE_URL not found. Running with dummy database logic.")
 
 
