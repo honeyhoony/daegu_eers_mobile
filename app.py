@@ -6,8 +6,7 @@ import sys
 import os
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple, Dict
-from sqlalchemy import or_, func, inspect
-from sqlalchemy import event
+from sqlalchemy import or_, func, inspect, event
 import calendar
 from io import BytesIO
 import html
@@ -19,131 +18,103 @@ from email.message import EmailMessage
 import random
 import string
 import extra_streamlit_components as stx
-import pandas as pd
 from pandas.tseries.offsets import BusinessDay
 import ssl
-import threading
-from datetime import datetime
-import time
-# 표준 Python 로깅 모듈 사용
-import logging 
-# 로거 설정 (Streamlit Cloud의 Console Logs에 기록됩니다)
+import logging
+
+# =========================================================
+# 로깅 설정
+# =========================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# =======================================
-# 0. config/Secrets 안전 로딩 (Cloud 대응)
-# =======================================
+# =========================================================
+# config.py 또는 streamlit secrets 로드
+# =========================================================
 try:
     import config as _local_config
 except ModuleNotFoundError:
     _local_config = None
 
 def _cfg(name, default=None):
-    # 1) 로컬 config.py에 있으면 그 값 사용
     if _local_config is not None and hasattr(_local_config, name):
         return getattr(_local_config, name)
-
-    # 2) 없으면 Streamlit Cloud secrets에서 읽기
     try:
         return st.secrets[name]
     except Exception:
         return default
-    
-DATABASE_URL = _cfg("DATABASE_URL", "")    
-
-
-# 1) 환경변수(Fly.io, Docker)를 최우선
-env_db_url = os.environ.get("SUPABASE_DATABASE_URL")
-
-# 2) Streamlit secrets 또는 config.py 값
-cfg_db_url = _cfg("SUPABASE_DATABASE_URL", "")
-
-SUPABASE_DATABASE_URL = env_db_url or cfg_db_url
-
-if not SUPABASE_DATABASE_URL:
-    st.error("FATAL: SUPABASE_DATABASE_URL이 환경변수 또는 secrets/config에 없습니다.")
-    st.stop()  # 앱 중단 (필수)
-
-    
-# 메일 관련 설정
-MAIL_FROM       = _cfg("MAIL_FROM", "")
-MAIL_SMTP_HOST  = _cfg("MAIL_SMTP_HOST", "")
-MAIL_SMTP_PORT  = int(_cfg("MAIL_SMTP_PORT", 587) or 587)
-MAIL_USER       = _cfg("MAIL_USER", "")
-MAIL_PASS       = _cfg("MAIL_PASS", "")
-
-# 관리자 비밀번호
-ADMIN_PASSWORD  = _cfg("ADMIN_PASSWORD", "admin")
-
-# 메일 발신자 이름
-MAIL_FROM_NAME  = _cfg("MAIL_FROM_NAME", "대구본부 EERS팀")
-
-# 최소 동기화 시작일
-from datetime import date as _date_cls
-_min_sync_raw = _cfg("MIN_SYNC_DATE", _date_cls(2025, 12, 1))
-if isinstance(_min_sync_raw, str):
-    MIN_SYNC_DATE = _date_cls.fromisoformat(_min_sync_raw)
-else:
-    MIN_SYNC_DATE = _min_sync_raw
-
-SIX_MONTHS = timedelta(days=30 * 6)
-
-import streamlit as st
-import logging
-import os
-
-SUPABASE_DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL")
-
-
-logger = logging.getLogger(__name__)
-
 
 # =========================================================
-# 1) DB 엔진 캐시 함수 (항상 최상단에서 정의)
+# DB URL 결정
+# =========================================================
+SUPABASE_DATABASE_URL = (
+    os.environ.get("SUPABASE_DATABASE_URL")
+    or _cfg("SUPABASE_DATABASE_URL", "")
+)
+
+if not SUPABASE_DATABASE_URL:
+    st.error("FATAL: SUPABASE_DATABASE_URL이 없습니다.")
+    st.stop()
+
+# =========================================================
+# SMTP 설정
+# =========================================================
+MAIL_FROM       = _cfg("MAIL_FROM", "")
+MAIL_SMTP_HOST  = _cfg("MAIL_SMTP_HOST", "")
+MAIL_SMTP_PORT  = int(_cfg("MAIL_SMTP_PORT", 587))
+MAIL_USER       = _cfg("MAIL_USER", "")
+MAIL_PASS       = _cfg("MAIL_PASS", "")
+MAIL_FROM_NAME  = _cfg("MAIL_FROM_NAME", "대구본부 EERS팀")
+ADMIN_PASSWORD  = _cfg("ADMIN_PASSWORD", "admin")
+
+# 최소 동기화일
+from datetime import date as _date_cls
+_min_sync_raw = _cfg("MIN_SYNC_DATE", _date_cls(2025, 12, 1))
+MIN_SYNC_DATE = (
+    _date_cls.fromisoformat(_min_sync_raw)
+    if isinstance(_min_sync_raw, str)
+    else _min_sync_raw
+)
+
+SIX_MONTHS = timedelta(days=180)
+
+# =========================================================
+# DB 엔진 캐싱
 # =========================================================
 @st.cache_resource
 def get_engine_cached():
     from database import get_engine_and_session
     return get_engine_and_session(SUPABASE_DATABASE_URL)
 
-
-# =========================================================
-# 2) Warm-up + 항상 안전한 엔진 초기화
-# =========================================================
 engine = None
 SessionLocal = None
 
-if SUPABASE_DATABASE_URL:
+logger.info("Connecting to Supabase PostgreSQL (cached)...")
 
-    logger.info("Connecting to Supabase PostgreSQL (cached)...")
-
-        # ---------- Warm-up: 최초 1회만 실행 ----------
-    if "db_warmed_up" not in st.session_state:
-        try:
-            st.info("Warming up DB connection...")
-            get_engine_cached()   # warm-up only (no binding yet)
-            st.session_state.db_warmed_up = True
-            logger.info("✅ Database connection warmed up successfully.")
-        except Exception as e:
-            logger.warning(f"Warm-up failed: {e}")
-            st.error("DB 연결 과정에서 오류가 발생했습니다.")
-            st.session_state.db_warmed_up = False
-
-        # ---------- Main 실행: 항상 캐시된 엔진을 불러옴 ----------
+# ---------- Warm-up: 최초 1회 ----------
+if "db_warmed_up" not in st.session_state:
     try:
-        _engine, _SessionLocal = get_engine_cached()
-
-        engine = _engine
-        SessionLocal = _SessionLocal
-
-        logger.info("Database connection successful and metadata loaded (cached).")
-
+        st.info("Warming up DB connection...")
+        get_engine_cached()
+        st.session_state.db_warmed_up = True
+        logger.info("DB warm-up success")
     except Exception as e:
-        engine = None
-        SessionLocal = None
-        logger.warning(f"Database engine not initialized due to connection issue: {e}")
-        st.error("데이터베이스 기능 오류 발생. 재시도하세요.")
+        logger.error(f"Warm-up failed: {e}")
+        st.error("DB 연결 오류. 다시 시도하세요.")
+        st.session_state.db_warmed_up = False
+
+# ---------- 항상 엔진을 가져옴 ----------
+try:
+    _engine, _SessionLocal = get_engine_cached()
+    engine = _engine
+    SessionLocal = _SessionLocal
+    logger.info("DB connection OK (cached)")
+except Exception as e:
+    logger.error(f"DB init failure: {e}")
+    engine = None
+    SessionLocal = None
+    st.error("데이터베이스 초기화 오류 발생")
+
 
 else:
     logger.warning("SUPABASE_DATABASE_URL not found. Running without DB connection.")
