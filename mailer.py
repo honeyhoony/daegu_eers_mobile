@@ -200,25 +200,23 @@ def build_body_html(office: str, period: Tuple[date, date], items_period: List[D
 # ...
 
 def send_mail(
-    to_list: List[str], 
-    subject: str, 
+    to_list: List[str],
+    subject: str,
     html_body: str,
-    attach_name: str, 
+    attach_name: str,
     attach_html: str,
-    # === 새로 추가된 인수 (Streamlit secrets에서 로드된 값) ===
-    mail_from: str, 
-    smtp_host: str, 
-    smtp_port: int, 
-    mail_user: str, 
+    mail_from: str,
+    smtp_host: str,
+    smtp_port: int,
+    mail_user: str,
     mail_pass: str
-    # ========================================================
 ):
+    """Gmail TLS handshake 안정화를 위한 개선 버전"""
+    import time
 
     msg = EmailMessage()
-
-    # 제목/발신자/수신자
     msg["Subject"] = subject
-    msg["From"] = mail_from # <--- config.MAIL_FROM 대신 인수로 받은 mail_from 사용
+    msg["From"] = mail_from
     msg["To"] = ", ".join(to_list)
 
     # HTML 본문
@@ -234,25 +232,20 @@ def send_mail(
             filename=attach_name
         )
 
-    # SMTP (로그인 메일과 동일)
     context = ssl.create_default_context()
 
     try:
-        with smtplib.SMTP(
-            smtp_host, # <--- config.MAIL_SMTP_HOST 대신 인수로 받은 smtp_host 사용
-            smtp_port, # <--- config.MAIL_SMTP_PORT 대신 인수로 받은 smtp_port 사용
-            timeout=30
-        ) as server:
-
+        with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.ehlo()
+            server.connect(smtp_host, smtp_port)  # 명시적으로 연결
+            time.sleep(0.5)                        # TLS 안정화 대기
             server.starttls(context=context)
             server.ehlo()
-            server.login(mail_user, mail_pass) # <--- config.MAIL_USER, config.MAIL_PASS 대신 인수로 받은 값 사용
+            time.sleep(0.5)
+            server.login(mail_user, mail_pass)
             server.send_message(msg)
 
-        print(f"메일 발송 성공 → {subject}")
-
-        # 🎯 여기! Streamlit 표시
+        print(f"✅ 메일 발송 성공 → {subject}")
         st.success("📨 메일이 성공적으로 발송되었습니다!")
 
     except Exception as e:
