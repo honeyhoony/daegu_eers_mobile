@@ -21,6 +21,14 @@ import extra_streamlit_components as stx
 from pandas.tseries.offsets import BusinessDay
 import ssl
 import logging
+from database import (
+    Base,
+    Notice,
+    MailRecipient,
+    MailHistory,
+    get_engine_and_session,
+    get_db_session
+)
 
 # =========================================================
 # 로깅 설정

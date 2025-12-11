@@ -1,4 +1,6 @@
 from __future__ import annotations
+import os
+import re
 from datetime import datetime
 from contextlib import contextmanager
 
@@ -7,45 +9,44 @@ from sqlalchemy import (
     DateTime, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
-from sqlalchemy.pool import NullPool
 
-# ─────────────────────────────────────────
-# 1) Base 선언
-# ─────────────────────────────────────────
+
+# =========================================================
+# Base 선언
+# =========================================================
 Base = declarative_base()
 
-# ─────────────────────────────────────────
-# 2) 모델 정의
-# ─────────────────────────────────────────
+
+# =========================================================
+# 모델 정의
+# =========================================================
 class Notice(Base):
     __tablename__ = "notices"
 
-    id              = Column(Integer, primary_key=True, autoincrement=True)
-    is_favorite     = Column(Boolean, default=False, index=True, nullable=False)
+    id              = Column(Integer, primary_key=True)
+    is_favorite     = Column(Boolean, default=False, nullable=False)
     stage           = Column(String)
     biz_type        = Column(String)
     project_name    = Column(String)
     client          = Column(String)
     address         = Column(String)
     phone_number    = Column(String)
-    model_name      = Column(String, nullable=False, default="N/A")
+    model_name      = Column(String, default="N/A")
     quantity        = Column(Integer)
     amount          = Column(String)
     is_certified    = Column(String)
-    notice_date     = Column(String, index=True)
+    notice_date     = Column(String)
     detail_link     = Column(String, nullable=False)
-    assigned_office = Column(String, nullable=False, index=True, default="관할지사확인요망")
+    assigned_office = Column(String, default="관할지사확인요망")
     status          = Column(String, default="")
     memo            = Column(String, default="")
-    source_system   = Column(String, default="G2B", index=True, nullable=False)
-    kapt_code       = Column(String, index=True, nullable=True)
+    source_system   = Column(String, default="G2B", nullable=False)
+    kapt_code       = Column(String)
 
     __table_args__ = (
         UniqueConstraint(
             "source_system", "detail_link", "model_name", "assigned_office",
-            name="_source_detail_model_office_uc"
+            name="uq_notice_unique"
         ),
     )
 
@@ -53,23 +54,23 @@ class Notice(Base):
 class MailRecipient(Base):
     __tablename__ = "mail_recipients"
 
-    id        = Column(Integer, primary_key=True, autoincrement=True)
-    office    = Column(String, index=True, nullable=False)
+    id        = Column(Integer, primary_key=True)
+    office    = Column(String, nullable=False)
     email     = Column(String, nullable=False)
-    is_active = Column(Boolean, default=True, nullable=False)
-    name      = Column(String, nullable=True)
+    is_active = Column(Boolean, default=True)
+    name      = Column(String)
 
     __table_args__ = (
-        UniqueConstraint("office", "email", name="uq_office_email"),
+        UniqueConstraint("office", "email", name="uq_mail_recipient"),
     )
 
 
 class MailHistory(Base):
     __tablename__ = "mail_history"
 
-    id           = Column(Integer, primary_key=True, autoincrement=True)
-    sent_at      = Column(DateTime, default=datetime.utcnow, index=True)
-    office       = Column(String, index=True, nullable=False)
+    id           = Column(Integer, primary_key=True)
+    sent_at      = Column(DateTime, default=datetime.utcnow)
+    office       = Column(String, nullable=False)
     subject      = Column(String, nullable=False)
     period_start = Column(String, nullable=False)
     period_end   = Column(String, nullable=False)
@@ -79,59 +80,44 @@ class MailHistory(Base):
     attach_name  = Column(String, default="")
     preview_html = Column(String, default="")
 
-# ─────────────────────────────────────────
-# 3) 엔진 & 세션 생성 함수
-# ─────────────────────────────────────────
 
-import re
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, declarative_base
+# =========================================================
+# DB URL 로딩
+# =========================================================
+DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("SUPABASE_DATABASE_URL 환경변수 누락됨")
 
-Base = declarative_base()
-
-def get_engine_and_session(database_url: str):
-    """Supabase PostgreSQL 엔진 및 세션팩토리 생성"""
-    if not database_url:
-        raise ValueError("DATABASE_URL is missing")
-
-    # ✅ (1) URL에서 pgbouncer 관련 매개변수 완전 제거
-    print(">>> ORIGINAL DATABASE URL:", database_url)
-    cleaned_url = re.sub(r"[?&]pgbouncer=true", "", database_url)
-    print(">>> CLEANED DATABASE URL:", cleaned_url)
-
-    # ✅ (2) 연결 풀 크기 제한
-    engine = create_engine(
-        cleaned_url,
-        pool_size=5,
-        max_overflow=0,
-        pool_pre_ping=True
-    )
-
-    Base.metadata.create_all(engine)
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-    return engine, SessionLocal
+DATABASE_URL = re.sub(r"[?&]pgbouncer=true", "", DATABASE_URL)
 
 
-# ─────────────────────────────────────────
-# 4) 초기 엔진/세션 선언
-# ─────────────────────────────────────────
-engine = None
-SessionLocal = None
+# =========================================================
+# Engine & Session 생성
+# =========================================================
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"sslmode": "require"},
+    pool_size=5,
+    max_overflow=0,
+)
 
-# ─────────────────────────────────────────
-# 5) DB 세션 컨텍스트 관리
-# ─────────────────────────────────────────
-@contextmanager
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-# ─────────────────────────────────────────
-# 6) KEA 모델 캐시 테이블 유틸
-# ─────────────────────────────────────────
+
+# 테이블 생성
+Base.metadata.create_all(bind=engine)
+
+
+# =========================================================
+# 세션 제공 함수 (app.py에서 import)
+# =========================================================
+def get_db_session():
+    return SessionLocal()
+
+
+# =========================================================
+# KEA 캐시 관련 함수
+# =========================================================
 def _ensure_kea_cache_table(session):
     try:
         session.execute(text("SELECT 1 FROM kea_model_cache LIMIT 1"))
@@ -148,17 +134,14 @@ def _ensure_kea_cache_table(session):
 def _kea_cache_get(session, model: str):
     if not model:
         return None
-
     _ensure_kea_cache_table(session)
+
     row = session.execute(
         text("SELECT exists_flag FROM kea_model_cache WHERE model_name = :m"),
         {"m": model}
     ).fetchone()
 
-    if row is None:
-        return None
-
-    return int(row[0])
+    return int(row[0]) if row else None
 
 
 def _kea_cache_set(session, model: str, flag: int):
@@ -173,13 +156,7 @@ def _kea_cache_set(session, model: str, flag: int):
         """),
         {
             "m": model,
-            "f": int(bool(flag)),
+            "f": int(flag),
             "ts": datetime.utcnow().isoformat(timespec="seconds")
         }
     )
-    
-import os
-
-db_url = os.getenv("SUPABASE_DATABASE_URL")
-
-

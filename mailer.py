@@ -6,23 +6,41 @@ from email.utils import formataddr
 from typing import List, Dict, Tuple
 from datetime import date, datetime, timedelta
 from collections import defaultdict
-from email.mime.application import MIMEApplication # <--- 이 줄이 필요합니다
+from email.mime.application import MIMEApplication
+from email.header import Header
+from email.message import EmailMessage
+
+import streamlit as st
+import logging
+
+# 로거 설정
+logger = logging.getLogger(__name__)
+
+# =======================================================
+# config 또는 secrets
+# =======================================================
 try:
     import config as _local_config
-except:
+except ModuleNotFoundError:
     _local_config = None
 
 def _cfg(key, default=None):
+    """config.py → st.secrets 순서로 로딩"""
     if _local_config and hasattr(_local_config, key):
         return getattr(_local_config, key)
-    return st.secrets.get(key, default)
+    try:
+        return st.secrets[key]
+    except Exception:
+        return default
 
-# mailer.py 상단
-from email.header import Header
-from email.message import EmailMessage
-import ssl, smtplib
-import streamlit as st
 
+# Gmail SMTP 환경 변수 로드
+MAIL_FROM       = _cfg("MAIL_FROM", "")
+MAIL_FROM_NAME  = _cfg("MAIL_FROM_NAME", "")
+MAIL_USER       = _cfg("MAIL_USER", "")
+MAIL_PASS       = _cfg("MAIL_PASS", "")
+MAIL_SMTP_HOST  = _cfg("MAIL_SMTP_HOST", "")
+MAIL_SMTP_PORT  = int(_cfg("MAIL_SMTP_PORT", 587))
 
 SIX_MONTHS = timedelta(days=180)
 
@@ -195,9 +213,6 @@ def build_body_html(office: str, period: Tuple[date, date], items_period: List[D
     return body, attach_name, attach_html, preview
 
 
-# mailer.py 파일 수정 (기존 config import는 제거하거나 주석 처리)
-# import config  <-- 이 줄은 제거하거나 주석 처리합니다.
-# ...
 
 def send_mail(
     to_list: List[str],
@@ -211,15 +226,13 @@ def send_mail(
     mail_user: str,
     mail_pass: str
 ):
-    """Gmail STARTTLS 버전 (Fly 환경에서 정상 작동 검증됨)"""
-    import time
-
+    """Gmail STARTTLS 버전 (Fly 환경에서 정상 작동)"""
     msg = EmailMessage()
     msg["Subject"] = subject
     msg["From"] = mail_from
     msg["To"] = ", ".join(to_list)
 
-    # 본문
+    # HTML 본문
     msg.set_content("HTML 지원이 필요합니다.", subtype="plain")
     msg.add_alternative(html_body, subtype="html")
 
@@ -237,18 +250,43 @@ def send_mail(
     try:
         with smtplib.SMTP(smtp_host, smtp_port, timeout=30) as server:
             server.ehlo()
-            # ❌ 아래 줄 제거! server.connect() 절대 호출하지 말 것
-            time.sleep(0.5)
             server.starttls(context=context)
             server.ehlo()
-            time.sleep(0.5)
             server.login(mail_user, mail_pass)
             server.send_message(msg)
 
-        print(f"✅ 메일 발송 성공 → {subject}")
+        logger.info(f"메일 발송 성공 → {subject}")
         st.success("📨 메일이 성공적으로 발송되었습니다!")
 
     except Exception as e:
-        print(f"[ERROR] send_mail() 발송 실패: {e}")
+        logger.error(f"[ERROR] send_mail 실패: {e}")
         st.error(f"메일 발송 실패: {e}")
         raise e
+
+
+# =======================================================
+# 로그인 인증코드 메일 발송
+# =======================================================
+
+def send_verification_email(to_email, code):
+    try:
+        msg = EmailMessage()
+        msg["Subject"] = "[EERS 시스템] 로그인 인증코드"
+        msg["From"] = f"{MAIL_FROM_NAME} <{MAIL_FROM}>"
+        msg["To"] = to_email
+
+        msg.set_content(f"인증코드: {code}")
+
+        with smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(MAIL_USER, MAIL_PASS)
+            smtp.send_message(msg)
+
+        logger.info(f"인증코드 메일 발송 성공 → {to_email}")
+
+    except Exception as e:
+        logger.error(f"인증코드 메일 발송 실패: {e}")
+        st.error("메일 발송 실패! 관리자에게 문의하세요.")
+    
