@@ -82,36 +82,45 @@ class MailHistory(Base):
 # ─────────────────────────────────────────
 # 3) 엔진 & 세션 생성 함수
 # ─────────────────────────────────────────
-def get_engine_and_session(db_url: str):
-    """
-    Supabase / PostgreSQL 연결용 엔진 & 세션 생성.
-    db_url 예:
-      - postgresql://postgres:비번@db.xxx.supabase.co:5432/postgres
-      - postgresql://postgres.프로젝트id:비번@aws-1-ap-northeast-1.pooler.supabase.com:6543/postgres?pgbouncer=true&sslmode=require
-    """
 
-    if not db_url:
-        raise ValueError("DB URL is not set.")
+import re
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker, declarative_base
 
-    # psycopg2 드라이버 사용
-    # 수정안 (드라이버 자동 선택)
-    if db_url.startswith("postgresql://") and "://" in db_url:
-        # psycopg2-binary 설치가 안된 환경에서도 작동하도록 pg8000 허용
-        if "+psycopg2" not in db_url:
-            db_url = db_url.replace("postgresql://", "postgresql+pg8000://", 1)
+Base = declarative_base()
 
-    # Supabase URL에 이미 ?sslmode=require 가 붙어 있으면 그대로 사용
-    # 따로 connect_args 안 쓰고 URL만 넘김
+def get_engine_and_session(database_url: str):
+    """Supabase PostgreSQL 엔진과 세션팩토리 생성"""
+    if not database_url:
+        raise ValueError("DATABASE_URL is missing")
+
+    # ✅ 1. 실제 URL을 로그에 남겨서 Fly 로그에서도 확인 가능
+    print(">>> ORIGINAL DATABASE URL:", database_url)
+
+    # ✅ 2. '?pgbouncer=true' 또는 '&pgbouncer=true'를 모두 제거
+    database_url = re.sub(r"[?&]pgbouncer=true", "", database_url)
+    print(">>> CLEANED DATABASE URL:", database_url)
+
+    # ✅ 3. 연결 풀 안정화 설정
     engine = create_engine(
-        db_url,
-        poolclass=NullPool,
-        pool_pre_ping=True,
-        connect_args={"sslmode": "require"},
+        database_url,
+        pool_size=5,
+        max_overflow=0,
+        pool_pre_ping=True
     )
 
-    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    # ✅ 4. 메타데이터 생성
     Base.metadata.create_all(engine)
+
+    # ✅ 5. 세션팩토리 반환
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
     return engine, SessionLocal
+
+
+
+
+
+
 
 # ─────────────────────────────────────────
 # 4) 초기 엔진/세션 선언
