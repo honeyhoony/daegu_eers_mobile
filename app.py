@@ -89,70 +89,65 @@ else:
 
 SIX_MONTHS = timedelta(days=30 * 6)
 
-# =========================================================
-# 0. 로컬 모듈 및 설정 로드 (PyQt 잔재 및 gui_app 제거)
-# =========================================================
-# 🛑 DB 연결에 필요한 모든 변수를 초기화합니다.
-engine = None
-SessionLocal = None
-# Note, MailRecipient, MailHistory 클래스는 아래 try 블록에서 가져오거나 더미로 대체됩니다.
+    import streamlit as st
+    import logging
+    from config import SUPABASE_DATABASE_URL
 
-try:
-    # database.py에서 필요한 모듈과 함수를 임포트합니다.
-    from database import (
-        get_engine_and_session, # 👈 추가된 함수
-        Notice, 
-        MailRecipient, 
-        MailHistory, 
-        Base, 
-        engine as db_module_engine, # database.py의 초기 None 엔진
-        SessionLocal as db_module_session_local # database.py의 초기 None 세션
-    )
-    # collect_data, mailer 임포트는 유지합니다.
-    from collect_data import (
-        fetch_data_for_stage, STAGES_CONFIG, is_relevant_text,
-        resolve_address_from_bjd, fetch_kapt_basic_info, fetch_kapt_maintenance_history,
-        _as_text, _to_int as _to_int_collect, _extract_school_name, _assign_office_by_school_name
-    )
-    from mailer import send_mail, build_subject, build_body_html, build_attachment_html
+    logger = logging.getLogger(__name__)
 
-    # ======================================================
-    # 1. DB 연결 캐시 및 초기화
-    # ======================================================
 
-    _engine, _SessionLocal = None, None  # ✅ 먼저 안전하게 선언
+    # =========================================================
+    # 1) DB 엔진 캐시 함수 (항상 최상단에서 정의)
+    # =========================================================
+    @st.cache_resource
+    def get_engine_cached():
+        from database import get_engine_and_session
+        return get_engine_and_session(SUPABASE_DATABASE_URL)
+
+
+
+    # =========================================================
+    # 2) Warm-up + 항상 안전한 엔진 초기화
+    # =========================================================
+    engine = None
+    SessionLocal = None
 
     if SUPABASE_DATABASE_URL:
+
         logger.info("Connecting to Supabase PostgreSQL (cached)...")
 
-        @st.cache_resource
-        def get_engine_cached():
-            from database import get_engine_and_session
-            return get_engine_and_session(SUPABASE_DATABASE_URL)
-
-        # ✅ 캐시 Warm-up (안전한 예외 처리 포함)
+        # ---------- Warm-up: 최초 1회만 실행 ----------
         if "db_warmed_up" not in st.session_state:
-            st.info("Warming up DB connection...")
             try:
-                _engine, _SessionLocal = get_engine_cached()
+                st.info("Warming up DB connection...")
+                get_engine_cached()   # warm-up only (no binding yet)
                 st.session_state.db_warmed_up = True
                 logger.info("✅ Database connection warmed up successfully.")
             except Exception as e:
-                logger.error(f"❌ DB warm-up failed: {e}")
-                st.error("⚠️ Database connection failed. Running in limited mode.")
-                _engine, _SessionLocal = None, None  # ✅ 안전한 초기화
+                logger.warning(f"Warm-up failed: {e}")
+                st.error("DB 연결 과정에서 오류가 발생했습니다.")
+                st.session_state.db_warmed_up = False
 
-        # ✅ 전역 바인딩 (예외 없이 항상 정의)
-        engine = _engine
-        SessionLocal = _SessionLocal
+        # ---------- Main 실행: 항상 캐시된 엔진을 불러옴 ----------
+        try:
+            _engine, _SessionLocal = get_engine_cached()
 
-        if engine:
+            engine = _engine
+            SessionLocal = _SessionLocal
+
             logger.info("Database connection successful and metadata loaded (cached).")
-        else:
-            logger.warning("Database engine not initialized due to connection failure.")
+
+        except Exception as e:
+            engine = None
+            SessionLocal = None
+            logger.warning(f"Database engine not initialized due to connection issue: {e}")
+            st.error("데이터베이스 기능 오류 발생. 재시도하세요.")
+
     else:
-        logger.warning("SUPABASE_DATABASE_URL not found. Running with dummy database logic.")
-        engine, SessionLocal = None, None  # ✅ 명시적으로 선언
+        logger.warning("SUPABASE_DATABASE_URL not found. Running without DB connection.")
+        engine = None
+        SessionLocal = None
+
 
 except ImportError as e:
     # 필수 모듈 로드 실패 시, Streamlit이 실행되도록 더미 정의를 유지합니다.
