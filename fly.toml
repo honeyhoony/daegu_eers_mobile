@@ -1,5 +1,5 @@
 app = "daegu-eers"
-primary_region = "sin"
+primary_region = "nrt"
 
 [env]
   PORT = "8501"
