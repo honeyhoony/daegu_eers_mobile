@@ -9,8 +9,8 @@ primary_region = "nrt"
 [http_service]
   internal_port = 8501
   force_https = true
-  auto_start_machines = true        # ✅ true로 변경
-  # auto_stop_machines = "stop"     # 🚫 제거 (이게 있으면 다시 루프)
+  auto_start_machines = true
+  auto_stop_machines = false
   min_machines_running = 1
   processes = ["app"]
 
@@ -29,7 +29,7 @@ primary_region = "nrt"
   [[services.tcp_checks]]
     interval = "15s"
     timeout = "2s"
-    grace_period = "10s"
+    grace_period = "30s"   # ✅ 수정 포인트
 
 [[vm]]
   memory = "1gb"
