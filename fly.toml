@@ -9,8 +9,8 @@ primary_region = "nrt"
 [http_service]
   internal_port = 8501
   force_https = true
-
-  auto_start_machines = false
+  auto_start_machines = true        # ✅ true로 변경
+  # auto_stop_machines = "stop"     # 🚫 제거 (이게 있으면 다시 루프)
   min_machines_running = 1
   processes = ["app"]
 
