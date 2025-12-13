@@ -274,19 +274,18 @@ def send_verification_email(to_email, code):
         msg["Subject"] = "[EERS 시스템] 로그인 인증코드"
         msg["From"] = f"{MAIL_FROM_NAME} <{MAIL_FROM}>"
         msg["To"] = to_email
-
         msg.set_content(f"인증코드: {code}")
 
-        with smtplib.SMTP(MAIL_SMTP_HOST, MAIL_SMTP_PORT) as smtp:
-            smtp.ehlo()
-            smtp.starttls()
-            smtp.ehlo()
+        context = ssl.create_default_context()
+
+        with smtplib.SMTP_SSL(MAIL_SMTP_HOST, int(MAIL_SMTP_PORT), context=context) as smtp:
             smtp.login(MAIL_USER, MAIL_PASS)
             smtp.send_message(msg)
 
         logger.info(f"인증코드 메일 발송 성공 → {to_email}")
 
     except Exception as e:
-        logger.error(f"인증코드 메일 발송 실패: {e}")
+        logger.exception("인증코드 메일 발송 실패")
         st.error("메일 발송 실패! 관리자에게 문의하세요.")
+
     
