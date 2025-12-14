@@ -20,12 +20,17 @@ except ModuleNotFoundError:
     _local_config = None
 
 def _cfg(key, default=None):
+    """환경변수 → config.py → st.secrets 순서로 탐색"""
+    import os
+    if key in os.environ:
+        return os.environ[key]
     if _local_config and hasattr(_local_config, key):
         return getattr(_local_config, key)
     try:
         return st.secrets[key]
     except Exception:
         return default
+
 
 MAIL_FROM = _cfg("MAIL_FROM", "daegu_eers@naver.com")  # Single Sender 주소
 MAIL_FROM_NAME = _cfg("MAIL_FROM_NAME", "대구본부 EERS팀")
