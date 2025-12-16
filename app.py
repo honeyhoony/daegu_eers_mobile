@@ -16,7 +16,39 @@ from sqlalchemy import or_, func, inspect
 
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import extra_streamlit_components as stx
-from collect_data import fetch_dlvr_header, fetch_dlvr_detail
+
+
+
+# ===== mobile dummy functions =====
+def fetch_dlvr_header(req_no):
+    return {}
+
+def fetch_dlvr_detail(req_no):
+    return []
+
+def fetch_data_for_stage(*args, **kwargs):
+    return None
+
+STAGES_CONFIG = {
+    "G2B": {"name": "G2B", "code": "g2b"},
+    "KAPT": {"name": "K-APT", "code": "kapt"},
+}
+
+def fetch_kapt_basic_info(code):
+    return {}
+
+def fetch_kapt_maintenance_history(code):
+    return []
+
+def send_mail(**kwargs):
+    return True
+
+def build_subject(*args):
+    return "모바일 조회"
+
+def build_body_html(*args):
+    return "<html><body>모바일 조회</body></html>", None, None, None
+
 
 # =========================
 # 내부 모듈 (유지)
