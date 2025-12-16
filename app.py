@@ -111,7 +111,6 @@ if not ACCESS_CODE:
     raise RuntimeError("ACCESS_CODE 환경변수가 설정되지 않았습니다.")
 ACCESS_CODE = ACCESS_CODE.strip()
 
-st.sidebar.caption(f"[DEBUG] ACCESS_CODE length: {len(ACCESS_CODE)}")
 
 
 COOKIE_NAME = "eers_access"
@@ -358,10 +357,7 @@ def render_sidebar_sync_caption():
                 st.sidebar.error("인증번호가 올바르지 않습니다.")
 
 
-st.sidebar.caption(
-    f"sync_access={st.session_state.get('sync_access')} "
-    f"cookie_set={st.session_state.get('_setting_sync_cookie_done')}"
-)
+
 
 # =========================================================
 # 2) 세션 기본값
@@ -1606,15 +1602,13 @@ def eers_app():
         # ---------------------------
         st.markdown("### 📌 메인 기능")
         render_menu_button("공고 조회 및 검색")
-
-
-
         render_menu_button("데이터 현황")
 
-
-
-
-
+        # ✅ 관리자 전용 메뉴
+        if has_sync_access():
+            st.markdown("---")
+            st.caption("🔒 관리자 전용")
+            render_menu_button("데이터 업데이트")
 
 
         st.markdown("---")
