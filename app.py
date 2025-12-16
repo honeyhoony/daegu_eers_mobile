@@ -287,7 +287,6 @@ def _cookie_manager():
 
 
 def has_sync_access() -> bool:
-    # 이미 세션에 있으면 쿠키 접근 안 함
     if st.session_state.get("sync_access", False):
         return True
 
@@ -299,6 +298,7 @@ def has_sync_access() -> bool:
         return True
 
     return False
+
 
 
 def grant_sync_access():
@@ -329,14 +329,14 @@ def revoke_sync_access():
 def render_sidebar_sync_caption():
     st.sidebar.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
-    # 이미 관리자면 아무것도 안 보임
+    # 이미 관리자면 아무것도 렌더하지 않음
     if has_sync_access():
         return
 
     st.session_state.setdefault("show_sync_code", False)
 
     # 아주 작은 캡션
-    if st.sidebar.button("관리자", key="admin_caption"):
+    if st.sidebar.button("데이터 수집", key="admin_caption"):
         st.session_state["show_sync_code"] = True
 
     if st.session_state["show_sync_code"]:
@@ -351,7 +351,7 @@ def render_sidebar_sync_caption():
         if submitted:
             input_code = code.strip().replace("\n", "").replace("\r", "")
             if input_code == ACCESS_CODE:
-                grant_sync_access()
+                grant_sync_access()   # ✅ 오직 여기서만 호출
                 st.session_state["show_sync_code"] = False
                 st.rerun()
             else:
