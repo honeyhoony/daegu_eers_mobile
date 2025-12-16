@@ -1,55 +1,44 @@
 import streamlit as st
 import re
-import pandas as pd
-import math
-import sys
 import os
-from datetime import datetime, date, timedelta
-from typing import Optional, List, Tuple, Dict
-from sqlalchemy import or_, func, inspect, event
-import calendar
-from io import BytesIO
-import html
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode, JsCode
-import threading
+import math
 import time
-import smtplib
-from email.message import EmailMessage
-import random
-import string
-import extra_streamlit_components as stx
-from pandas.tseries.offsets import BusinessDay
-from mailer import send_verification_email
-import ssl
+import threading
+import calendar
 import logging
+import pandas as pd
+
+from io import BytesIO
+from datetime import datetime, date, timedelta
+from typing import Optional
+
+from sqlalchemy import or_, func, inspect
+
+from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
+import extra_streamlit_components as stx
+from collect_data import fetch_dlvr_header, fetch_dlvr_detail
+
+# =========================
+# 내부 모듈 (유지)
+# =========================
 from database import (
     Base,
     Notice,
-    MailRecipient,
-    MailHistory,
-    get_db_session
+    get_db_session,
+    engine,
 )
-from database import engine
 
-from database import (
-     Notice, 
-     MailRecipient, 
-     MailHistory, 
-     Base, 
-     engine as db_module_engine, # database.py의 초기 None 엔진
-     SessionLocal as db_module_session_local # database.py의 초기 None 세션
-)
-# collect_data, mailer 임포트는 유지합니다.
 from collect_data import (
-    fetch_data_for_stage, STAGES_CONFIG, is_relevant_text,
-    resolve_address_from_bjd, fetch_kapt_basic_info, fetch_kapt_maintenance_history,
-    _as_text, _to_int as _to_int_collect, _extract_school_name, _assign_office_by_school_name
-    )
-from mailer import send_mail_sendgrid, build_subject, build_body_html, build_attachment_html
+    fetch_data_for_stage,
+    STAGES_CONFIG,
+    fetch_kapt_basic_info,
+    fetch_kapt_maintenance_history,
+)
+from pandas.tseries.offsets import BusinessDay
 
 
 # =========================================================
-# 로깅 설정
+# 로깅
 # =========================================================
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,6 +51,7 @@ try:
 except ModuleNotFoundError:
     _local_config = None
 
+
 def _cfg(name, default=None):
     if _local_config is not None and hasattr(_local_config, name):
         return getattr(_local_config, name)
@@ -70,26 +60,22 @@ def _cfg(name, default=None):
     except Exception:
         return default
 
-# =========================================================
-# DB URL 결정
-# =========================================================
-SUPABASE_DATABASE_URL = (
-    os.environ.get("SUPABASE_DATABASE_URL")
-    or _cfg("SUPABASE_DATABASE_URL", "")
-)
 
+# =========================================================
+# DB URL 결정 (Supabase 유지)
+# =========================================================
+SUPABASE_DATABASE_URL = os.environ.get("SUPABASE_DATABASE_URL") or _cfg("SUPABASE_DATABASE_URL", "")
 if not SUPABASE_DATABASE_URL:
     st.error("FATAL: SUPABASE_DATABASE_URL이 없습니다.")
     st.stop()
 
 # =========================================================
-# SMTP 설정
+# 인증번호(로그인) 정책
+#  - 로그인 = '수동 데이터 수집(API 호출)' 권한만 부여
+#  - 조회/다운로드/데이터현황은 비로그인 허용
 # =========================================================
-MAIL_FROM       = _cfg("MAIL_FROM", "daegu_eers@naver.com")
-MAIL_FROM_NAME  = _cfg("MAIL_FROM_NAME", "대구본부 EERS팀")
-SENDGRID_API_KEY = _cfg("SENDGRID_API_KEY", "")
-
-ADMIN_PASSWORD  = _cfg("ADMIN_PASSWORD", "admin")
+ACCESS_CODE = str(_cfg("ACCESS_CODE", "0000")).strip()  # 예: 4~8자리 권장
+COOKIE_NAME = "eers_access"
 
 # 최소 동기화일
 from datetime import date as _date_cls
@@ -102,28 +88,30 @@ MIN_SYNC_DATE = (
 
 SIX_MONTHS = timedelta(days=180)
 
-
-
-
-
-
-
-
-
 # =========================================================
-# 0-A. 대체 유틸리티
+# 0-A. 공통 유틸
 # =========================================================
 def _get_last_sync_datetime_from_meta():
+    # TODO: meta 테이블로 대체 가능. 현재는 임시.
     return datetime.now() - timedelta(hours=2)
+
+
 def _set_last_sync_datetime_to_meta(dt: datetime):
+    # TODO: meta 테이블로 대체 가능. 현재는 임시.
     pass
+
+
 def is_weekend(d: date) -> bool:
     return d.weekday() >= 5
+
+
 def prev_business_day(d: date) -> date:
     d -= timedelta(days=1)
     while is_weekend(d):
         d -= timedelta(days=1)
     return d
+
+
 def _as_date(val) -> Optional[date]:
     s = str(val or "").strip()
     digits = re.sub(r"\D", "", s)
@@ -138,20 +126,29 @@ def _as_date(val) -> Optional[date]:
         except ValueError:
             pass
     return None
+
+
 def only_digits_gui(val):
-    return re.sub(r'\D', '', str(val or ''))
+    return re.sub(r"\D", "", str(val or ""))
+
+
 def fmt_phone(val):
     v = only_digits_gui(val)
     if not v:
         return "정보 없음"
-    if len(v) == 8: return f"{v[:4]}-{v[4:]}"
-    if len(v) == 9: return f"{v[:2]}-{v[2:5]}-{v[5:]}"
-    if len(v) == 10: return f"{v[:2]}-{v[2:6]}-{v[6:]}" if v.startswith("02") else f"{v[:3]}-{v[3:6]}-{v[6:]}"
-    if len(v) == 11: return f"{v[:3]}-{v[3:7]}-{v[7:]}"
+    if len(v) == 8:
+        return f"{v[:4]}-{v[4:]}"
+    if len(v) == 9:
+        return f"{v[:2]}-{v[2:5]}-{v[5:]}"
+    if len(v) == 10:
+        return f"{v[:2]}-{v[2:6]}-{v[6:]}" if v.startswith("02") else f"{v[:3]}-{v[3:6]}-{v[6:]}"
+    if len(v) == 11:
+        return f"{v[:3]}-{v[3:7]}-{v[7:]}"
     return str(val)
 
+
 # =========================================================
-# 0-1. 상수 및 헬퍼
+# 0-1. 상수
 # =========================================================
 OFFICES = [
     "전체", "직할", "동대구지사", "경주지사", "남대구지사", "서대구지사",
@@ -161,38 +158,38 @@ OFFICES = [
 ITEMS_PER_PAGE = 100
 DEFAULT_START_DATE = MIN_SYNC_DATE
 DEFAULT_END_DATE = date.today()
-MAIL_EXCLUDE_OFFICES = ["전체"]
+
 CERT_TRUE_VALUES = {"O", "0", "Y", "YES", "1", "TRUE", "인증"}
 
-def open_new_window(url: str):
-    js = f"""
-    <script>
-        window.open("{url}", "_blank");
-    </script>
-    """
-    st.components.v1.html(js, height=0)
 
 def _normalize_cert(val: str) -> str:
-    if val is None: return ""
+    if val is None:
+        return ""
     s = str(val).strip().upper()
-    if not s: return ""
-    if s in CERT_TRUE_VALUES: return "O"
-    if s in {"X", "N", "NO", "미인증"}: return "X"
-    return val
+    if not s:
+        return ""
+    if s in CERT_TRUE_VALUES:
+        return "O"
+    if s in {"X", "N", "NO", "미인증"}:
+        return "X"
+    return str(val)
+
 
 def _fmt_int_commas(val):
     try:
         s = str(val or "").replace(",", "").strip()
-        if not s or s.lower() == "none": return "정보 없음"
+        if not s or s.lower() == "none":
+            return "정보 없음"
         n = int(float(s))
         return f"{n:,}"
     except Exception:
         return str(val) if val not in (None, "") else "정보 없음"
 
+
 def _fmt_date_hyphen(val):
-    import re
     s = str(val or "").strip()
-    if not s: return "정보 없음"
+    if not s:
+        return "정보 없음"
     digits = re.sub(r"\D", "", s)
     if len(digits) >= 6:
         y, m = digits[:4], digits[4:6]
@@ -203,15 +200,21 @@ def _fmt_date_hyphen(val):
         return out
     return s
 
+
 def _fmt_phone_hyphen(val):
-    import re
     v = re.sub(r"\D", "", str(val or ""))
-    if not v: return "정보 없음"
-    if len(v) == 8: return f"{v[:4]}-{v[4:]}"
-    if len(v) == 9: return f"{v[:2]}-{v[2:5]}-{v[5:]}"
-    if len(v) == 10: return f"{v[:2]}-{v[2:6]}-{v[6:]}" if v.startswith("02") else f"{v[:3]}-{v[3:6]}-{v[6:]}"
-    if len(v) == 11: return f"{v[:3]}-{v[3:7]}-{v[7:]}"
+    if not v:
+        return "정보 없음"
+    if len(v) == 8:
+        return f"{v[:4]}-{v[4:]}"
+    if len(v) == 9:
+        return f"{v[:2]}-{v[2:5]}-{v[5:]}"
+    if len(v) == 10:
+        return f"{v[:2]}-{v[2:6]}-{v[6:]}" if v.startswith("02") else f"{v[:3]}-{v[3:6]}-{v[6:]}"
+    if len(v) == 11:
+        return f"{v[:3]}-{v[3:7]}-{v[7:]}"
     return str(val)
+
 
 def _split_prdct_name(s: str):
     if not s: return "", "", ""
@@ -227,16 +230,6 @@ def _pick(d: dict, *keys, default=""):
         if v not in (None, "", "-"): return v
     return default
 
-def open_popup_window(html_content: str):
-    encoded = html_content.replace("'", "\\'")
-    js = f"""
-    <script>
-        var popup = window.open("", "_blank", "width=1200,height=900,scrollbars=yes");
-        popup.document.write('{encoded}');
-        popup.document.close();
-    </script>
-    """
-    st.components.v1.html(js, height=0)
 
 def _to_int_local(val):
     try:
@@ -246,296 +239,94 @@ def _to_int_local(val):
 
 
 # =========================================================
-# 로그인 & 인증 관련 함수 (수정)
+# 1) 쿠키/세션 기반 “수동 데이터수집 권한” (캡션형)
 # =========================================================
-# =========================================================
-# 로그인 & 인증 관련 설정 및 헬퍼 함수
-# (기존 코드에서 유지되는 부분 - send_verification_email은 필수)
-# =========================================================
-
-# (import stx, random, string, datetime, timedelta, ssl, smtplib, EmailMessage 등은
-# 상위 코드에서 이미 처리되었으므로 생략하고, 변경된 함수만 제시합니다.)
-
-def get_manager():
-    """CookieManager 인스턴스를 반환합니다."""
-    return st.session_state.get("cookie_manager_instance")
-
-def logout():
-    """세션을 초기화하고 쿠키를 삭제하여 로그아웃합니다."""
-    manager = st.session_state.get("cookie_manager_instance")
-    if manager:
-        try:
-            manager.delete(cookie="eers_auth_token")
-        except Exception as e:
-            # print(f"로그아웃: 쿠키 삭제 중 오류 발생 (무시): {e}")
-            pass
-
-    # 세션 상태 초기화
-    keys_to_delete = [k for k in st.session_state.keys() if k not in ["cookie_manager_instance", "auto_view_initialized"]]
-    for k in keys_to_delete:
-        del st.session_state[k]
-        
-    st.toast("로그아웃되었습니다.", icon="👋")
-    st.rerun()
-
-
-
-
-# =========================================================
-# 재구성된 로그인/인증 UI 렌더링 함수 (핵심)
-# =========================================================
-
-def check_auth_cookie():
-    """쿠키를 확인하고 유효하면 로그인 상태를 설정합니다."""
+def _cookie_manager():
     if "cookie_manager_instance" not in st.session_state:
-        # stx.CookieManager 초기화 (처음 로딩 시 1회)
         st.session_state["cookie_manager_instance"] = stx.CookieManager(key="eers_cookie_manager")
-    
-    cookie_manager = st.session_state["cookie_manager_instance"]
-    token = cookie_manager.get(cookie="eers_auth_token")
+    return st.session_state["cookie_manager_instance"]
 
-    if token and not st.session_state.get("logged_in_success"):
-        # 쿠키가 있고 아직 로그인되지 않은 경우 (세션 복원)
-        st.session_state["logged_in_success"] = True
-        st.session_state["target_email"] = token
-        st.session_state["auth_stage"] = "complete"
-        
+
+def has_sync_access() -> bool:
+    """수동 데이터 수집 권한 여부(쿠키/세션)."""
+    cm = _cookie_manager()
+    token = cm.get(cookie=COOKIE_NAME)
+    if token == "1":
+        st.session_state["sync_access"] = True
         return True
-    
-    return st.session_state.get("logged_in_success", False)
-
-def render_auth_ui():
-    """로그인 및 인증 단계를 사이드바에 렌더링"""
-    
-    # 0. 쿠키 매니저 및 로그인 상태 확인
-    is_logged_in = check_auth_cookie()
-    cookie_manager = st.session_state.get("cookie_manager_instance")
-    # Safety Check: 만약 인스턴스가 없다면 (매우 드문 경우)
-    if not cookie_manager:
-        st.error("Cookie Manager 초기화 오류. 앱을 새로고침하십시오.")
-        return
-    
-    st.session_state.setdefault("generated_code", None)
-    st.session_state.setdefault("code_timestamp", None)
-    # 로그인 성공 후 auth_stage는 'complete'로 설정되어야 함
-    st.session_state.setdefault("auth_stage", "input_email" if not is_logged_in else "complete")
-
-    # 로그인 성공 상태
-    if is_logged_in:
-        email_full = st.session_state.get("target_email", "")
-        st.markdown(f"**로그인:** <span style='text-decoration:none;'>{email_full}</span>", unsafe_allow_html=True)
-
-        if st.button("로그아웃", key="sidebar_logout_btn_success", type="secondary", use_container_width=True):
-            logout()
- 
-        return
-
-    # 1. 이메일 입력 단계
-    if st.session_state["auth_stage"] == "input_email":
-        st.caption("사내 메일(@kepco.co.kr)로 인증 코드를 발송합니다.")
-        
-        email_id = st.text_input(
-            "메일 ID",
-            key="sidebar_email_id_input",
-            placeholder="메일 ID를 입력하세요"
-        )
-        st.text_input(
-            "도메인",
-            value="@kepco.co.kr",
-            disabled=True,
-            key="sidebar_email_domain"
-        )
-
-        full_email = f"{email_id}@kepco.co.kr" if email_id else ""
-        
-        submitted = st.button("인증코드 발송", type="primary", use_container_width=True, key="sidebar_send_code")
-
-        if submitted:
-
-            # ✅ [1] 재발송 제한 가드 (여기!!)
-            now = datetime.now()
-            last = st.session_state.get("last_mail_attempt")
-
-            if last and (now - last).seconds < 30:
-                remain = 30 - (now - last).seconds
-                st.warning(f"⏳ {remain}초 후 다시 시도해주세요.")
-                return
-
-            st.session_state["last_mail_attempt"] = now
-
-            if not email_id:
-                st.error("❌ 이메일을 입력하세요.")
-            else:
-                code = "".join(random.choices(string.digits, k=6))
-                
-                st.session_state["generated_code"] = code
-                st.session_state["target_email"] = full_email
-                st.session_state["code_timestamp"] = datetime.now()
-
-                with st.spinner("메일 발송 중..."):
-                    ok = send_verification_email(full_email, code)
-
-                if ok:
-                    st.session_state["generated_code"] = code
-                    st.session_state["target_email"] = full_email
-                    st.session_state["code_timestamp"] = datetime.now()
-                    st.session_state["auth_stage"] = "verify_code"
-                    st.toast("📧 인증코드 발송 완료!")
-                    st.rerun()
-                else:
-                    st.session_state.pop("generated_code", None)
-                    st.session_state.pop("code_timestamp", None)
-                    st.error("메일 발송 실패 (현재 환경에서 SMTP 전송이 제한됨)")
-
-        return
-        
+    return bool(st.session_state.get("sync_access", False))
 
 
-    # -------------------------------
-    # ⭐⭐⭐ 여기다 넣는다!! ⭐⭐⭐
-    # -------------------------------
-    def _verify_code_submit():
-        """엔터 입력 시 자동 로그인"""
-        code_input = st.session_state.get("sidebar_code_input_verify", "")
-        generated = st.session_state.get("generated_code", "")
-        cookie_manager = st.session_state["cookie_manager_instance"]
-
-        time_limit_sec = 300
-        elapsed = datetime.now() - st.session_state["code_timestamp"]
-        if elapsed.total_seconds() > time_limit_sec:
-            st.error("⏰ 인증 시간이 만료되었습니다. 다시 시도해주세요.")
-            st.session_state["auth_stage"] = "input_email"
-            st.rerun()
-            return
-
-        if code_input == generated:
-            st.session_state["logged_in_success"] = True
-            st.session_state["auth_stage"] = "complete"
-
-            expire_date = datetime.now() + timedelta(days=180)
-            cookie_manager.set(
-                "eers_auth_token",
-                st.session_state["target_email"],
-                expires_at=expire_date
-            )
-            st.toast("로그인 성공!", icon="✅")
-            st.rerun()
-        else:
-            st.error("❌ 인증코드가 일치하지 않습니다.")
+def grant_sync_access():
+    cm = _cookie_manager()
+    st.session_state["sync_access"] = True
+    expire_date = datetime.now() + timedelta(days=180)
+    cm.set(COOKIE_NAME, "1", expires_at=expire_date)
 
 
-    # 2. 인증코드 입력 단계
-    if st.session_state["auth_stage"] == "verify_code":
-        time_limit_sec = 300 # 5분
-        time_limit = timedelta(seconds=time_limit_sec)
-        elapsed = datetime.now() - st.session_state["code_timestamp"]
-        remaining = max(0, int(time_limit.total_seconds() - elapsed.total_seconds()))
-        
-        # 만료 처리
-        if remaining <= 0:
-            st.error("⏰ 인증 시간이 만료되었습니다. 다시 시도해주세요.")
-            st.session_state["auth_stage"] = "input_email"
-            # st.rerun() # 만료 후 바로 Rerun 대신, 다음 1초 Rerun에 맡깁니다.
-            return
+def revoke_sync_access():
+    cm = _cookie_manager()
+    try:
+        cm.delete(cookie=COOKIE_NAME)
+    except Exception:
+        pass
+    st.session_state["sync_access"] = False
 
-        # 타이머 및 안내
-        st.info(f"📩 **{st.session_state.get('target_email', '주소 미확인')}**로 발송된 6자리 인증코드를 입력하세요.")
-        st.markdown(f"**⏳ 남은 시간: ** <span style='color:red; font-weight:bold;'>{remaining}초</span>", unsafe_allow_html=True)
 
-        code_input = st.text_input(
-        "인증코드 6자리",
-        max_chars=6,
-        key="sidebar_code_input_verify",
-        label_visibility="collapsed",
-        on_change=_verify_code_submit  # 👈 Enter 입력 시 자동 실행
+def render_sidebar_sync_caption():
+    """
+    사이드바 맨 아래 회색 캡션:
+    - 클릭하면 코드 입력창만 노출
+    - 코드 일치 시 sync_access 부여
+    """
+    st.sidebar.markdown(
+        "<div style='margin-top:12px;'></div>",
+        unsafe_allow_html=True
     )
-        col_login, col_back = st.columns(2)
-        
-        login_btn = col_login.button("로그인", type="primary", use_container_width=True, key="sidebar_login_btn_verify")
-        back_btn = col_back.button("이메일 다시 입력", key="sidebar_back_btn")
-        
-        # --- 버튼 클릭 로직 ---
-        if back_btn:
-            st.session_state["auth_stage"] = "input_email"
-            st.rerun()
-            return
 
-        if login_btn:
-            if remaining <= 0:
-                 st.error("⏰ 인증 시간이 만료되었습니다. 다시 시도해주세요.")
-                 st.session_state["auth_stage"] = "input_email"
-                 st.rerun()
-            elif code_input == st.session_state["generated_code"]:
-                # 로그인 성공 처리
-                st.session_state["logged_in_success"] = True
-                st.session_state["auth_stage"] = "complete" 
-                
-                expire_date = datetime.now() + timedelta(days=180)
-                cookie_manager.set( 
-                    "eers_auth_token",
-                    st.session_state["target_email"],
-                    expires_at=expire_date
-                )
-                st.toast("로그인 성공!", icon="✅")
-                st.rerun() 
+    # 토글 상태
+    st.session_state.setdefault("show_sync_code", False)
+
+    # 회색 캡션(클릭 영역)
+    caption_clicked = st.sidebar.button(
+        "데이터 수집",
+        key="cap_sync",
+        type="secondary",
+        use_container_width=True
+    )
+
+    if caption_clicked:
+        st.session_state["show_sync_code"] = not st.session_state["show_sync_code"]
+
+    # 토글 열렸을 때만 입력창
+    if st.session_state["show_sync_code"]:
+        code = st.sidebar.text_input(
+            "인증번호",
+            type="password",
+            key="sync_code_input",
+            label_visibility="collapsed",
+            placeholder="인증번호 입력"
+        )
+        if st.sidebar.button("확인", key="sync_code_submit", use_container_width=True):
+            if str(code).strip() == ACCESS_CODE and ACCESS_CODE:
+                grant_sync_access()
+                st.session_state["show_sync_code"] = False
+                st.sidebar.success("권한이 활성화되었습니다.")
+                st.rerun()
             else:
-                st.error("❌ 인증코드가 일치하지 않습니다.")
-                
-        # 타이머 갱신을 위해 1초마다 강제 재실행
-        time.sleep(1)
-        st.rerun()
+                st.sidebar.error("인증번호가 올바르지 않습니다.")
 
-
-
-
-# =========================================================
-# 자동 업데이트 스케줄러 (백그라운드 스레드)
-# =========================================================
-
-@st.cache_resource
-def start_auto_update_scheduler():
-    def scheduler_loop():
-        last_run_hour = -1
-        while True:
-            now = datetime.now()
-            
-            if now.hour in [8, 12, 19]:
-                if now.minute == 0 and now.hour != last_run_hour:
-                    try:
-                        # 💥 변경: print 대신 logger.info 사용
-                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 시작")
-                        
-                        target_date_str = now.strftime("%Y%m%d")
-                        
-                        for stage in STAGES_CONFIG.values():
-                            fetch_data_for_stage(target_date_str, stage)
-                            
-                        _set_last_sync_datetime_to_meta(now)
-                        
-                        # 캐시 클리어
-                        _get_new_item_counts_by_source_and_office.clear()
-                        load_data_from_db.clear()
-                        
-                        # 💥 변경: print 대신 logger.info 사용
-                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 완료")
-                        last_run_hour = now.hour
-                        
-                    except Exception as e:
-                        # 💥 변경: print 대신 logger.error 사용
-                        logger.error(f"[Auto-Sync] 오류 발생: {e}")
-            
-            time.sleep(30)
-
-    t = threading.Thread(target=scheduler_loop, daemon=True)
-    t.start()
-    logger.info(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.") # 💥 변경
-
+    # 이미 권한이 있으면 아주 작게 “해제”만 제공 (원하면 제거 가능)
+    if has_sync_access():
+        with st.sidebar.expander("권한", expanded=False):
+            if st.button("권한 해제", key="sync_access_revoke", use_container_width=True):
+                revoke_sync_access()
+                st.rerun()
 
 
 # =========================================================
-# 1. 세션 상태 및 DB 세션
+# 2) 세션 기본값
 # =========================================================
-
 def init_session_state():
     ss = st.session_state
     ss.setdefault("office", "전체")
@@ -545,33 +336,30 @@ def init_session_state():
     ss.setdefault("keyword", "")
     ss.setdefault("only_cert", False)
     ss.setdefault("include_unknown", False)
+
     ss.setdefault("page", 1)
-    ss.setdefault("admin_auth", False) # 관리자 인증
-    ss.setdefault("logged_in_success", False) # 일반 로그인
     ss.setdefault("df_data", pd.DataFrame())
     ss.setdefault("total_items", 0)
     ss.setdefault("total_pages", 1)
     ss.setdefault("data_initialized", False)
+
+    # 라우팅
     ss.setdefault("route_page", "공고 조회 및 검색")
-    ss.setdefault("view_mode", "카드형") # 💡 [수정] 초기값 "카드형"
+    ss.setdefault("view_mode", "카드형")
     ss.setdefault("selected_notice", None)
-    ss.setdefault("is_updating", False)
-    ss.setdefault("show_login_dialog", False) # 로그인 다이얼로그 상태
-    st.session_state.setdefault("show_login_form", False) 
-    if "auth_stage" not in st.session_state:
-        st.session_state["auth_stage"] = "input_email"
+
+    # sync 권한(로그인 대체)
+    ss.setdefault("sync_access", False)
 
 
-
-
-
-
-
-# 신규 건수 집계
+# =========================================================
+# 3) 신규 건수 집계
+# =========================================================
 @st.cache_data(ttl=300)
 def _get_new_item_counts_by_source_and_office() -> dict:
     session = get_db_session()
-    if not session: return {}
+    if not session:
+        return {}
     try:
         today = date.today()
         biz_today = today if not is_weekend(today) else prev_business_day(today)
@@ -591,13 +379,12 @@ def _get_new_item_counts_by_source_and_office() -> dict:
         counts = {}
         for office, source, count in results:
             office_name = office or ""
-            # 복수관할 처리 로직 유지
             if "/" in office_name:
                 parts = [p.strip() for p in office_name.split("/") if p.strip()]
                 for part in parts:
                     counts.setdefault(part, {"G2B": 0, "K-APT": 0})
                     source_key = "K-APT" if source == "K-APT" else "G2B"
-                    counts[part][source_key] += count // len(parts)
+                    counts[part][source_key] += count // max(1, len(parts))
             else:
                 counts.setdefault(office_name, {"G2B": 0, "K-APT": 0})
                 source_key = "K-APT" if source == "K-APT" else "G2B"
@@ -608,21 +395,23 @@ def _get_new_item_counts_by_source_and_office() -> dict:
         counts["전체"] = {"G2B": total_g2b, "K-APT": total_kapt}
         return counts
     except Exception as e:
-        print(f"신규 건수(소스별) 집계 오류: {e}")
+        logger.exception(f"신규 건수 집계 오류: {e}")
         return {}
     finally:
         session.close()
 
-# =========================================================
-# 2. 데이터 로딩 (공고 조회)
-# =========================================================
 
+
+# =========================================================
+# 4) 데이터 로딩 (공고 조회) - 비로그인 허용
+# =========================================================
 @st.cache_data(ttl=600, show_spinner="데이터를 조회 중...")
 def load_data_from_db(
     office, source, start_date, end_date, keyword, only_cert, include_unknown, page,
 ):
     session = get_db_session()
-    if not session: return pd.DataFrame(), 0 # 더미 반환
+    if not session:
+        return pd.DataFrame(), 0
 
     start_date_str = start_date.isoformat()
     end_date_str = end_date.isoformat()
@@ -631,8 +420,10 @@ def load_data_from_db(
         Notice.notice_date.between(start_date_str, end_date_str)
     )
 
-    if source == "나라장터": query = query.filter(Notice.source_system == "G2B")
-    elif source == "K-APT": query = query.filter(Notice.source_system == "K-APT")
+    if source == "나라장터":
+        query = query.filter(Notice.source_system == "G2B")
+    elif source == "K-APT":
+        query = query.filter(Notice.source_system == "K-APT")
 
     if office and office != "전체":
         query = query.filter(
@@ -647,8 +438,8 @@ def load_data_from_db(
     if only_cert:
         query = query.filter(
             or_(
-                Notice.is_certified == "O", Notice.is_certified == "0", 
-                Notice.is_certified == "Y", Notice.is_certified == "YES", 
+                Notice.is_certified == "O", Notice.is_certified == "0",
+                Notice.is_certified == "Y", Notice.is_certified == "YES",
                 Notice.is_certified == "1", Notice.is_certified == "인증"
             )
         )
@@ -666,21 +457,21 @@ def load_data_from_db(
     keyword_text = (keyword or "").strip()
     if keyword_text:
         cols = [Notice.project_name, Notice.client, Notice.model_name]
-        is_dlvr_no_format = bool(re.match(r"^[A-Z0-9]{10,}$", keyword_text.replace("-", "").upper()))
-        
-        if is_dlvr_no_format:
-            normalized = keyword_text.replace("-", "").upper()
-            query = query.filter(Notice.detail_link.like(f"%dlvrreq:{normalized}%"))
-        else:
-            terms = [t.strip() for t in keyword_text.split() if t.strip() and not t.startswith("-")]
-            if terms:
-                query = query.filter(or_(*[or_(*[c.ilike(f"%{term}%") for c in cols]) for term in terms]))
+        terms = [t.strip() for t in keyword_text.split() if t.strip() and not t.startswith("-")]
+        if terms:
+            query = query.filter(or_(*[
+                or_(*[c.ilike(f"%{term}%") for c in cols]) for term in terms
+            ]))
 
     total_items = query.count()
     offset = (page - 1) * ITEMS_PER_PAGE
-    rows = query.order_by(Notice.notice_date.desc(), Notice.id.desc()).offset(offset).limit(ITEMS_PER_PAGE).all()
-    
-    # 데이터 프레임 변환 로직 유지
+    rows = (
+        query.order_by(Notice.notice_date.desc(), Notice.id.desc())
+        .offset(offset)
+        .limit(ITEMS_PER_PAGE)
+        .all()
+    )
+
     data = []
     today = date.today()
     biz_today = today if not is_weekend(today) else prev_business_day(today)
@@ -694,7 +485,6 @@ def load_data_from_db(
 
         data.append({
             "id": n.id,
-            "⭐": "★" if n.is_favorite else "☆",
             "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
             "사업소": (n.assigned_office or "").replace("/", "\n"),
             "단계": n.stage or "",
@@ -708,15 +498,15 @@ def load_data_from_db(
             "공고일자": _as_date(n.notice_date).isoformat() if n.notice_date else "",
             "DETAIL_LINK": n.detail_link or "",
             "KAPT_CODE": n.kapt_code or "",
-            "IS_FAVORITE": bool(n.is_favorite),
             "IS_NEW": is_new,
         })
 
     df = pd.DataFrame(data)
     session.close()
     return df, total_items
-def search_data():
 
+
+def search_data():
     # 안전한 엔진 체크
     if 'engine' in globals() and engine is not None:
         try:
@@ -742,75 +532,55 @@ def search_data():
         st.session_state.df_data = pd.DataFrame()
         st.session_state.total_items = 0
 
-    total_pages = (
+    st.session_state.total_pages = (
         max(1, math.ceil(st.session_state.total_items / ITEMS_PER_PAGE))
         if st.session_state.total_items > 0
         else 1
     )
-    st.session_state.total_pages = total_pages
     st.session_state["data_initialized"] = True
+
+
+# =========================================================
+# 5) 자동 업데이트 스케줄러 (유지)
+#   - 단, 실제 실행(start)은 앱 본문에서 선택적으로 호출
+# =========================================================
+@st.cache_resource
+def start_auto_update_scheduler():
+    def scheduler_loop():
+        last_run_hour = -1
+        while True:
+            now = datetime.now()
+
+            if now.hour in [8, 12, 19]:
+                if now.minute == 0 and now.hour != last_run_hour:
+                    try:
+                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 시작")
+
+                        target_date_str = now.strftime("%Y%m%d")
+                        for stage in STAGES_CONFIG.values():
+                            fetch_data_for_stage(target_date_str, stage)
+
+                        _set_last_sync_datetime_to_meta(now)
+
+                        _get_new_item_counts_by_source_and_office.clear()
+                        load_data_from_db.clear()
+
+                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 완료")
+                        last_run_hour = now.hour
+
+                    except Exception as e:
+                        logger.error(f"[Auto-Sync] 오류 발생: {e}")
+
+            time.sleep(30)
+
+    t = threading.Thread(target=scheduler_loop, daemon=True)
+    t.start()
+    logger.info(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
+
 
 # =========================================================
 # 3. 상세 보기 / 즐겨찾기 (수정)
 # =========================================================
-
-def toggle_favorite(notice_id: int):
-    """즐겨찾기 토글 (로그인 필요)"""
-    if not st.session_state.get("logged_in_success"):
-        st.error("❌ 즐겨찾기 기능은 로그인 후 사용할 수 있습니다.")
-        return
-
-    session = get_db_session()
-    if not session: return # DB 세션이 없을 경우 종료
-
-    try:
-        n = session.query(Notice).filter(Notice.id == notice_id).one_or_none()
-        if n:
-            n.is_favorite = not bool(n.is_favorite)
-            if not n.is_favorite:
-                n.status = ""
-                n.memo = ""
-            session.commit()
-            st.toast("즐겨찾기 상태가 변경되었습니다.")
-
-            # 즐겨찾기 변경 후 데이터 다시 로드
-            load_data_from_db.clear()
-            _get_new_item_counts_by_source_and_office.clear()
-
-            # 현재 페이지의 데이터를 다시 조회
-            search_data_no_rerun() 
-            st.rerun() # UI 갱신
-
-    except Exception as e:
-        st.error(f"즐겨찾기 변경 중 오류: {e}")
-        session.rollback()
-    finally:
-        session.close()
-
-def search_data_no_rerun():
-
-    # 안전한 엔진 체크
-    if 'engine' in globals() and engine is not None:
-        try:
-            insp = inspect(engine)
-            if not insp.has_table("notices"):
-                Base.metadata.create_all(engine)
-        except Exception:
-            pass
-
-    try:
-        df, total_items = load_data_from_db(
-            st.session_state["office"], st.session_state["source"],
-            st.session_state["start_date"], st.session_state["end_date"],
-            st.session_state["keyword"], st.session_state["only_cert"],
-            st.session_state["include_unknown"], st.session_state["page"],
-        )
-        st.session_state.df_data = df
-        st.session_state.total_items = total_items
-        st.session_state.total_pages = max(1, math.ceil(total_items / ITEMS_PER_PAGE))
-    except Exception as e:
-        print(f"데이터 조회 중 오류 (no rerun): {e}")
-
 
 
 
@@ -1084,120 +854,6 @@ def show_detail_panel(rec: dict):
             else:
                 st.warning("상세 링크가 없습니다.")
 
-# [수정] 캐시 데코레이터(@st.cache_data)를 삭제하여 항상 DB에서 최신 조회
-def _get_recipients_from_db(offices: list[str]) -> list[dict]:
-    session = get_db_session()
-    target_offices = [o for o in offices if o and o != "전체"]
-
-    recipients = []
-    # 1. 활성 상태(is_active=True)인 수신자만 조회
-    q = session.query(MailRecipient).filter(MailRecipient.is_active == True)
-    
-    # 2. 선택된 사업소 필터링
-    if "전체" not in offices and target_offices:
-        q = q.filter(MailRecipient.office.in_(target_offices))
-
-    for r in q.order_by(MailRecipient.email).all():
-        if r.email:
-            recipients.append(
-                {
-                    "email": r.email.strip().lower(),
-                    "office": r.office,
-                    "name": r.name or "",
-                }
-            )
-    session.close() # 세션 닫기 추가 권장
-    return recipients
-
-
-def _filter_unknown(items: list[dict], include_unknown: bool):
-    if include_unknown:
-        return items
-
-    filtered_items = []
-    UNKNOWN_STR = {
-        "관할불명",
-        "미확인",
-        "미정",
-        "불명",
-        "unknown",
-        "UNKNOWN",
-        "확인필요",
-        "확인 필요",
-        "관할지사확인요망",
-    }
-
-    for item in items:
-        office_val = item.get("assigned_office", "").strip()
-        if "/" in office_val:
-            continue
-        if any(u.lower() in office_val.lower() for u in UNKNOWN_STR):
-            continue
-        filtered_items.append(item)
-    return filtered_items
-
-
-def _query_items_for_period(session, start: date, end: date, office: str):
-    q = session.query(Notice).filter(
-        Notice.notice_date >= start.isoformat(),
-        Notice.notice_date <= end.isoformat(),
-    )
-    if office and office != "전체":
-        q = q.filter(
-            or_(
-                Notice.assigned_office == office,
-                Notice.assigned_office.like(f"{office}/%"),
-                Notice.assigned_office.like(f"%/{office}"),
-                Notice.assigned_office.like(f"%/{office}/%"),
-            )
-        )
-
-    q = q.order_by(Notice.notice_date.desc())
-    rows = q.all()
-    items = []
-    for r in rows:
-        items.append(
-            {
-                "source_system": r.source_system or "",
-                "assigned_office": r.assigned_office or "",
-                "stage": r.stage or "",
-                "project_name": r.project_name or "",
-                "client": r.client or "",
-                "address": (r.address or ""),
-                "phone_number": r.phone_number or "",
-                "model_name": r.model_name or "",
-                "quantity": r.quantity or 0,
-                "is_certified": r.is_certified or "",
-                "notice_date": r.notice_date or "",
-                "detail_link": r.detail_link or "",
-            }
-        )
-    return items
-
-
-def _save_history(
-    session,
-    office,
-    subject,
-    period,
-    to_list,
-    total_count,
-    attach_name,
-    preview_html,
-):
-    h = MailHistory(
-        office=office,
-        subject=subject,
-        period_start=period[0].isoformat(),
-        period_end=period[1].isoformat(),
-        to_list=";".join(to_list),
-        total_count=total_count,
-        attach_name=attach_name,
-        preview_html=preview_html,
-    )
-    session.add(h)
-    session.commit()
-
 
 
 # =========================================================
@@ -1340,15 +996,10 @@ background:#ffffff; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,0.05); h
 
                 st.markdown(card_html, unsafe_allow_html=True)
 
-                b1, b2 = st.columns(2)
-                is_logged_in = st.session_state.get("logged_in_success", False)
-                star_label = "★ 즐겨찾기" if rec.get("IS_FAVORITE") else "☆ 즐겨찾기"
+                b1 = st.columns(2)
 
+      
                 with b1:
-                    if st.button(star_label, key=f"fav_card_{rec['id']}", use_container_width=True, disabled=not is_logged_in):
-                        toggle_favorite(rec["id"])
-
-                with b2:
                     if st.button("🔍 상세", key=f"detail_card_{rec['id']}", use_container_width=True):
                         popup_detail_panel(rec)
 
@@ -1361,7 +1012,7 @@ def render_notice_table(df):
         return None
 
     df_disp = df.copy()
-    df_disp["⭐"] = df_disp["IS_FAVORITE"]
+
     df_disp.insert(0, "상세", "🔍") 
 
     def format_title(row):
@@ -1396,7 +1047,7 @@ def render_notice_table(df):
     df_disp["사업명"] = df_disp.apply(format_title, axis=1)
 
     visible_cols = [
-        "id", "상세", "⭐", "순번", "구분", "사업소", "단계", "사업명", 
+        "id", "상세", "순번", "구분", "사업소", "단계", "사업명", 
         "기관명", "소재지", "연락처", "모델명", "수량", "고효율 인증 여부", "공고일자"
     ]
     final_cols = [c for c in visible_cols if c in df_disp.columns]
@@ -1406,16 +1057,6 @@ def render_notice_table(df):
     # ----------------------------------
     gb = GridOptionsBuilder.from_dataframe(df_disp[final_cols])
     
-    is_logged_in = st.session_state.get("logged_in_success", False)
-    
-    gb.configure_column(
-        "⭐", 
-        width=60, 
-        editable=is_logged_in, # 💡 [수정] 로그인 시에만 편집 가능
-        cellStyle={'textAlign': 'center'},
-        type=['booleanColumn', 'centerAligned']
-    )
-
     gb.configure_selection("single", use_checkbox=False, pre_selected_rows=[])
     gb.configure_default_column(resizable=True, filterable=True, sortable=True)
     gb.configure_column("id", hide=True)
@@ -1424,66 +1065,67 @@ def render_notice_table(df):
     gb.configure_column("구분", width=90, cellStyle={'textAlign': 'center'})
     gb.configure_column("단계", width=90, cellStyle={'textAlign': 'center'})
     gb.configure_column("사업명", width=450)
-    
-    # 💡 [추가] 상세 보기 버튼 클릭 처리
-    js_func = JsCode("""
-        function(params) {
-            if (params.column.colId === '상세' && params.data.id) {
-                // '상세' 컬럼 클릭 시 해당 행의 ID를 이용하여 Streamlit에 전달
-                Streamlit.set
-            }
+   
+    gb.configure_selection(
+        selection_mode="single",
+        use_checkbox=False
+    )
+
+    gb.configure_column(
+        "상세",
+        width=60,
+        cellStyle={
+            'textAlign': 'center',
+            'cursor': 'pointer',
+            'fontWeight': 'bold'
         }
-    """)
-    
-    gridOptions = gb.build()
+    )
+
+    gb.configure_column("id", hide=True)
+    gb.configure_default_column(resizable=True, sortable=True, filter=True)
+
 
     grid_response = AgGrid(
-        df_disp[final_cols], gridOptions=gridOptions, 
-        update_mode=GridUpdateMode.VALUE_CHANGED, 
-        data_return_mode=DataReturnMode.AS_INPUT, fit_columns_on_grid_load=False,
-        height=350, theme='streamlit'
+        df_disp[final_cols],
+        gridOptions=gb.build(),
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
+        data_return_mode=DataReturnMode.AS_INPUT,
+        height=350,
+        theme="streamlit"
     )
+
+    selected_rows = grid_response.get("selected_rows")
+
+    if selected_rows:
+        if isinstance(selected_rows, list):
+            rec = selected_rows[0]
+        else:
+            rec = selected_rows.iloc[0].to_dict()
+
+        # 🔍 상세 컬럼 클릭 → 즉시 팝업
+        popup_detail_panel(rec)
+
+
+        
+    gridOptions = gb.build()
+
+
 
     # ----------------------------------
     # 4. 선택 및 토글 로직 처리 (데이터 비교)
     # ----------------------------------
-    edited_df_raw = grid_response.get('data') 
-    
-    # 1) 즐겨찾기 토글 감지 및 처리
-    if is_logged_in and edited_df_raw is not None and not edited_df_raw.empty:
-        df_comp = df[['id', 'IS_FAVORITE']].copy()
-        df_comp = df_comp.rename(columns={'IS_FAVORITE': 'IS_FAVORITE_original'})
 
-        merged_df = pd.merge(df_comp, edited_df_raw[['id', '⭐']], on='id', how='inner')
-        merged_df = merged_df.rename(columns={'⭐': '⭐_edited'})
-        changed_rows = merged_df[merged_df['IS_FAVORITE_original'] != merged_df['⭐_edited']]
-        
-        if not changed_rows.empty:
-            changed_id = changed_rows.iloc[0]['id']
-            toggle_favorite(int(changed_id)) 
-            return None 
 
-    # 2) 행 선택 감지 및 반환 (상세 보기)
-    selected_rows = grid_response.get('selected_rows')
-    target_row_dict = None
+    selected_rows = grid_response.get("selected_rows")
 
-    if hasattr(selected_rows, "empty"): 
-        if not selected_rows.empty:
-            target_row_dict = selected_rows.iloc[0].to_dict()
-    elif isinstance(selected_rows, list) and len(selected_rows) > 0:
-        target_row_dict = selected_rows[0]
-
-    if target_row_dict:
-        try:
-            sel_id = target_row_dict.get("id")
-            # 💡 [수정] '상세' 버튼이 눌렸는지 확인 (선택된 행의 '상세' 컬럼 값으로 확인)
-            if target_row_dict.get("상세") == "🔍":
-                original_series = df[df["id"] == sel_id].iloc[0]
-                return original_series.to_dict() 
-        except Exception:
-            return None
+    if selected_rows:
+        if isinstance(selected_rows, list):
+            return selected_rows[0]
+        else:
+            return selected_rows.iloc[0].to_dict()
 
     return None
+
 
 # =========================================================
 # 5. 메인 페이지 (공고 조회 및 검색) (수정)
@@ -1614,641 +1256,15 @@ def main_page():
     # 페이징 생략
 
 
-# =========================================================
-# 8. 로그인 필요 페이지들 (기존 코드 유지)
-# =========================================================
 
-def favorites_page():
-    st.title("⭐ 관심 고객 관리")
-    
-    col_filter, _ = st.columns([1, 3])
-    with col_filter:
-        selected_office = st.selectbox("사업소 필터", OFFICES, key="fav_office_select")
-
-    st.info("체크 해제 후 '상태/메모 저장' 버튼을 누르면 관심 고객에서 해제됩니다.")
-
-    session = get_db_session()
-    if not session:
-        st.error("데이터베이스 연결 오류.")
-        return
-
-    query = session.query(Notice).filter(Notice.is_favorite == True)
-
-    if selected_office != "전체":
-        query = query.filter(
-            or_(
-                Notice.assigned_office == selected_office,
-                Notice.assigned_office.like(f"{selected_office}/%"),
-                Notice.assigned_office.like(f"%/{selected_office}"),
-                Notice.assigned_office.like(f"%/{selected_office}/%"),
-            )
-        )
-
-    favs = query.order_by(Notice.notice_date.desc()).all()
-    session.close()
-
-    if not favs:
-        st.warning(f"'{selected_office}' 사업소에 관심 고객으로 등록된 공고가 없습니다.")
-        return
-
-    data = []
-    STATUSES = ["", "미접촉", "전화", "메일안내", "접수", "지급", "보류", "취소"]
-
-    for n in favs:
-        data.append({
-            "id": n.id, "⭐": True,
-            "사업소": (n.assigned_office or "").replace("/", "\n"),
-            "사업명": n.project_name or "", "기관명": n.client or "",
-            "공고일자": _as_date(n.notice_date).isoformat() if n.notice_date else "",
-            "상태": n.status or "", "메모": n.memo or "",
-            "DETAIL_LINK": n.detail_link or "", "KAPT_CODE": n.kapt_code or "",
-            "SOURCE": n.source_system,
-        })
-
-    df_favs = pd.DataFrame(data)
-
-    edited_df = st.data_editor(
-        df_favs.drop(columns=["DETAIL_LINK", "KAPT_CODE", "SOURCE"]),
-        column_config={
-            "⭐": st.column_config.CheckboxColumn("⭐", help="클릭하여 관심 고객 해제", default=True), 
-            "상태": st.column_config.SelectboxColumn("상태", options=STATUSES, required=True),
-            "메모": st.column_config.TextColumn("메모", default="", max_chars=200),
-            "사업명": st.column_config.Column("사업명", width="large"),
-            "사업소": st.column_config.Column("사업소", width="medium"),
-            "id": None,
-        },
-        hide_index=True, key="fav_editor", use_container_width=True,
-    )
-
-    col_save, col_export, col_spacer = st.columns([1.5, 1.5, 10])
-
-    if col_save.button("상태/메모 저장"):
-            session = get_db_session()
-            if not session:
-                st.error("DB 연결 오류")
-                return
-            updates = 0
-            favorites_set = 0
-            unfavorites = 0
-            try:
-                for _, row in edited_df.iterrows():
-                    n = session.query(Notice).filter(Notice.id == row["id"]).one()
-                    
-                    is_status_memo_changed = (n.status != row["상태"] or n.memo != row["메모"])
-                    is_favorite_changed = (n.is_favorite != row["⭐"])
-                    
-                    if is_status_memo_changed:
-                        n.status = row["상태"]
-                        n.memo = row["메모"]
-                        updates += 1
-                    
-                    if is_favorite_changed:
-                        n.is_favorite = row["⭐"]
-                        if row["⭐"]: favorites_set += 1
-                        else: unfavorites += 1
-
-                    if is_status_memo_changed or is_favorite_changed:
-                        session.add(n)
-
-                session.commit()
-                
-                msg = []
-                if updates > 0: msg.append(f"{updates}건의 상태 및 메모가 저장되었습니다.")
-                if favorites_set > 0: msg.append(f"{favorites_set}건이 관심 고객으로 설정되었습니다.")
-                if unfavorites > 0: msg.append(f"{unfavorites}건이 관심 고객에서 해제되었습니다.")
-
-                if msg: st.success(" ".join(msg))
-                else: st.info("변경된 내용이 없습니다.")
-                    
-                load_data_from_db.clear()
-                st.rerun()
-
-            except Exception as e:
-                st.error(f"저장 중 오류 발생: {e}")
-                session.rollback()
-            finally:
-                session.close()
-
-    @st.cache_data
-    def convert_df_to_excel(df):
-        output = BytesIO()
-        df.drop(columns=["id", "⭐"], errors="ignore").to_excel(output, index=False, engine="openpyxl")
-        return output.getvalue()
-
-    col_export.download_button(
-        label="엑셀로 저장",
-        data=convert_df_to_excel(edited_df),
-        file_name="eers_favorites.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-
-# =========================================================
-# 9. 관리자 전용 페이지들 (기존 코드 유지)
-# =========================================================
-
-def mail_send_page():
-
-    # 시작일/종료일 초기값 셋팅 (지난주 월~일)
-    def _set_last_week_default():
-        today = date.today()
-        this_monday = today - timedelta(days=today.weekday())
-        last_monday = this_monday - timedelta(days=7)
-        last_sunday = last_monday + timedelta(days=6)
-
-        st.session_state.setdefault("mail_start", last_monday)
-        st.session_state.setdefault("mail_end", last_sunday)
-
-    _set_last_week_default()
-
-
-    st.title("✉️ 메일 발송")
-
-    # (2) 이전 발송 결과 표시
-    if "mail_send_result" in st.session_state:
-        result = st.session_state.pop("mail_send_result")
-        if result["type"] == "success":
-            st.success(result["message"])
-        else:
-            st.error(result["message"])
-
-    # ============================
-    # ① 사업소 선택 / 기간 설정
-    # ============================
-
-    col_office, col_period = st.columns(2)
-
-    with col_office:
-        st.subheader("발송 사업소")
-        office_options = ["전체"] + [o for o in OFFICES if o not in MAIL_EXCLUDE_OFFICES]
-
-        selected_offices = st.multiselect(
-            "사업소 선택 (복수 선택 가능)",
-            options=office_options,
-            default=["전체"],
-            key="mail_office_select",
-        )
-
-        include_unknown = st.checkbox(
-            "관할불명/복수관할 항목 포함", key="mail_include_unknown"
-        )
-
-    with col_period:
-        st.subheader("발송 기간 설정")
-        btn_col1, btn_col2, _ = st.columns(3)
-
-        def set_last_week():
-            today = date.today()
-            this_monday = today - timedelta(days=today.weekday())
-            last_monday = this_monday - timedelta(days=7)
-            last_sunday = last_monday + timedelta(days=6)
-            st.session_state["mail_start"] = last_monday
-            st.session_state["mail_end"] = last_sunday
-
-        def set_last_month():
-            today = date.today()
-            first_this = date(today.year, today.month, 1)
-            last_prev = first_this - timedelta(days=1)
-            first_prev = date(last_prev.year, last_prev.month, 1)
-            st.session_state["mail_start"] = first_prev
-            st.session_state["mail_end"] = last_prev
-
-        if btn_col1.button("지난 주 (월~일)"):
-            set_last_week()
-        if btn_col2.button("지난 달"):
-            set_last_month()
-
-        if "mail_start" not in st.session_state:
-            st.session_state["mail_start"] = DEFAULT_END_DATE - timedelta(days=7)
-        if "mail_end" not in st.session_state:
-            st.session_state["mail_end"] = DEFAULT_END_DATE
-
-        start_date = st.date_input("시작일", st.session_state["mail_start"], key="mail_start")
-        end_date = st.date_input("종료일", st.session_state["mail_end"], key="mail_end")
-
-    st.markdown("---")
-
-    # ============================
-    # ② 수신자 목록 표시
-    # ============================
-
-    recipients_data = _get_recipients_from_db(selected_offices)
-    email_list = [r["email"] for r in recipients_data]
-
-    if not email_list:
-        st.error("❌ 선택한 사업소에 등록된 메일 수신자가 없습니다.\n수신자 관리 메뉴에서 등록해 주세요.")
-        st.stop()
-
-    with st.expander(f"수신자 목록 ({len(email_list)}명)", expanded=False):
-        if recipients_data:
-            df_rec = pd.DataFrame(recipients_data).rename(columns={
-                "office": "사업소",
-                "name": "담당자명",
-                "email": "이메일"
-            })
-            st.dataframe(
-                df_rec,
-                hide_index=True,
-                use_container_width=True,
-                column_order=df_rec.columns.tolist(),
-                column_config={col: st.column_config.Column(disabled=True) for col in df_rec.columns},
-            )
-        else:
-            st.warning("선택된 사업소에 수신자가 없습니다. '수신자 관리'에서 등록해주세요.")
-
-    st.markdown("---")
-
-    # ============================
-    # ③ 메일 미리보기 생성 버튼
-    # ============================
-
-    if st.button("📄 메일 미리보기", key="preview_btn"):
-        if start_date > end_date:
-            st.error("시작일은 종료일보다 늦을 수 없습니다.")
-            st.stop()
-
-        session = get_db_session()
-        mail_preview_data = {}
-
-        with st.spinner("메일 내용 준비 중..."):
-
-            year = start_date.year
-            year_start, year_end = date(year, 1, 1), date(year, 12, 31)
-
-            for office in selected_offices:
-                items_period = _query_items_for_period(session, start_date, end_date, office)
-                items_period = _filter_unknown(items_period, include_unknown)
-                items_annual = _query_items_for_period(session, year_start, year_end, office)
-
-                if not items_period and not items_annual:
-                    continue
-
-                subject = build_subject(office, (start_date, end_date), len(items_period))
-                body, attach_name, attach_html, preview = build_body_html(
-                    office, (start_date, end_date), items_period, items_annual
-                )
-
-                mail_preview_data[office] = {
-                    "subject": subject,
-                    "html_body": body,
-                    "to_list": _get_recipients_from_db([office]),
-                    "attach_name": attach_name,
-                    "attach_html": attach_html,
-                    "items_period": items_period,
-                }
-
-        if not mail_preview_data:
-            st.info("발송할 내용이 없습니다.")
-            st.stop()
-
-        st.session_state["mail_preview_data"] = mail_preview_data
-        st.success("미리보기가 준비되었습니다!")
-        st.rerun()
-
-    # ============================
-    # ④ 미리보기 탭 표시
-    # ============================
-
-    if "mail_preview_data" in st.session_state:
-        mpd = st.session_state["mail_preview_data"]
-
-        st.subheader("발송 전 최종 확인")
-        tab_titles = list(mpd.keys())
-        tabs = st.tabs(tab_titles)
-
-        for i, office in enumerate(tab_titles):
-            data = mpd[office]
-            with tabs[i]:
-                st.markdown(f"**제목:** {data['subject']}")
-                st.markdown(f"**수신자:** {', '.join(r['email'] for r in data['to_list'])}")
-                st.markdown(f"**신규 공고 건수:** {len(data['items_period'])}건")
-                st.markdown("---")
-                st.markdown("**본문 미리보기 (HTML)**")
-                st.components.v1.html(data["html_body"], height=400, scrolling=True)
-
-        st.markdown("---")
-        st.info("미리보기를 확인하셨다면 발송을 진행하세요.")
-
-        # ============================
-        # ⑤ 최종 발송 버튼
-        # ============================
-
-        if st.button("📨 최종 발송 실행 (SMTP)", key="final_send_btn"):
-            st.session_state["_do_final_send"] = True
-            st.rerun()
-
-    # ============================
-    # ⑥ 실제 발송 실행
-    # ============================
-
-    if st.session_state.get("_do_final_send"):
-        mpd = st.session_state["mail_preview_data"]
-        sent, failed = [], {}
-
-        with st.spinner("메일 발송 중..."):
-            for office, data in mpd.items():
-                try:
-                    # ✅ 1. 수신자 목록
-                    to_list = data["to_list"]
-
-                    # ✅ 2. 메일 제목 / 본문 / 첨부
-                    subject = build_subject(
-                        office=office,
-                        period=data["period"],
-                        count=len(data["items_period"])
-                    )
-
-                    html_body, attach_name, attach_html, preview = build_body_html(
-                        office=office,
-                        period=data["period"],
-                        items_period=data["items_period"],
-                        items_annual=data["items_annual"]
-                    )
-
-                    # ✅ 3. SendGrid 발송
-                    send_mail_sendgrid(
-                        to_list=to_list,
-                        subject=subject,
-                        html_body=html_body,
-                        attach_name=attach_name,
-                        attach_html=attach_html,
-                    )
-
-                    sent.append(office)
-
-                except Exception as e:
-                    msg = str(e)
-                    if "553" in msg:
-                        msg = "수신자 이메일 주소가 올바르지 않습니다. 수신자 관리에서 확인해 주세요."
-                    elif "535" in msg:
-                        msg = "SMTP 로그인 실패 — 메일 서버 아이디/비밀번호를 확인하세요."
-                    elif "Timed out" in msg:
-                        msg = "메일 서버 연결이 지연되었습니다. 네트워크 상태를 확인하세요."
-
-                    failed[office] = msg
-
-        st.session_state["_do_final_send"] = False
-        st.session_state.pop("mail_preview_data", None)
-
-        result_msg = []
-
-        # --------------------
-        # 성공 부분
-        # --------------------
-        if sent:
-            result_msg.append(f"✅ 발송 성공: {', '.join(sent)}")
-
-        # --------------------
-        # 실패 부분 — 줄바꿈 적용
-        # --------------------
-        if failed:
-            fail_lines = [f"{office}: {err}" for office, err in failed.items()]
-            fail_block = "\n".join(fail_lines)
-
-            result_msg.append(f"❌ 발송 실패:\n\n{fail_block}")
-
-        # --------------------
-        # 최종 메시지 저장
-        # --------------------
-        st.session_state["mail_send_result"] = {
-            "type": "success" if sent else "error",
-            "message": "\n".join(result_msg),
-        }
-
-
-        st.rerun()
-
-
-
-# =========================================================
-# 수신자 관리 관련 헬퍼
-# =========================================================
-
-def load_rows_by_office_from_db():
-    data = {}
-    session = get_db_session()
-    if not session:
-        return {}
-    try:
-        rows = (
-            session.query(MailRecipient)
-            .order_by(MailRecipient.office, MailRecipient.email)
-            .all()
-        )
-        for r in rows:
-            data.setdefault(r.office, []).append(
-                {
-                    "use": bool(getattr(r, "is_active", True)),
-                    "office": getattr(r, "office", ""),
-                    "name": getattr(r, "name", ""),
-                    "id": r.email.split("@")[0] if getattr(r, "email", "") else "",
-                    "domain": r.email.split("@")[1] if "@" in getattr(r, "email", "") else "",
-                }
-            )
-    except Exception as e:
-        st.error(f"DB 로드 오류: {e}")
-    finally:
-        session.close()
-    return data
-
-# =========================================================
-# 수신자 관리 페이지 (UI)
-# =========================================================
-
-
-
-#=========================================================
-# 수신자 관리 저장 헬퍼
-# =========================================================
-
-def save_rows_by_office_to_db(df_editor):
-
-    def _normalize(val, default=""):
-        if val is None:
-            return default
-        if isinstance(val, list):
-            if not val:
-                return default
-            val = val[0]
-        if pd.isna(val):
-            return default
-        return str(val)
-
-    session = get_db_session()
-    if not session:
-        st.error("DB 오류: 세션 생성 실패")
-        return
-
-    failed_rows = []
-    saved_count = 0
-
-    try:
-        # 기존 데이터 삭제
-        session.query(MailRecipient).delete()
-        session.flush()
-
-        for idx, row in df_editor.iterrows():
-
-            office = _normalize(row["사업소명"])
-            name = _normalize(row["담당자명"])
-            local = _normalize(row["이메일 ID"])
-            domain = "@kepco.co.kr"
-
-            # -----------------------------
-            # ⚠ 유효성 검사
-            # -----------------------------
-            error_msg = None
-
-            if office == "":
-                error_msg = "사업소명이 비어 있습니다."
-            elif local == "":
-                error_msg = "이메일 ID가 비어 있습니다."
-            elif " " in local:
-                error_msg = "이메일 ID에 공백이 들어있습니다."
-
-            if error_msg:
-                failed_rows.append(f"{idx+1}번째 행 오류: {error_msg}")
-                continue
-
-            email = f"{local}@kepco.co.kr"
-
-            use_val = row["발송대상"]
-            is_active = (
-                use_val if isinstance(use_val, bool)
-                else str(use_val).lower() in ["1", "true", "yes"]
-            )
-
-            # DB 저장
-            session.add(
-                MailRecipient(
-                    office=office,
-                    email=email.lower(),
-                    name=name,
-                    is_active=is_active,
-                )
-            )
-            saved_count += 1
-
-        # 저장 개수 확인
-        if saved_count == 0:
-            session.rollback()
-            st.error("❌ 저장된 수신자가 없습니다. 아래 오류를 확인하세요.")
-            return
-
-        session.commit()
-
-        # 성공 메시지
-        st.success(f"✅ 총 {saved_count}명 저장 완료!")
-
-        # 실패한 행도 알려주기
-        if failed_rows:
-            st.warning("⚠ 일부 행은 저장되지 않았습니다:")
-            for err in failed_rows:
-                st.warning(err)
-
-        time.sleep(0.7)
-        st.rerun()
-
-    except Exception as e:
-        session.rollback()
-        st.error(f"🔥 예외 오류 발생: {e}")
-
-    finally:
-        session.close()
-
-def mail_manage_page():
-    st.title("👤 수신자 관리")
-
-    if not st.session_state.admin_auth:
-        st.error("관리자만 접근 가능합니다.")
-        return
-
-    # 사업소 목록
-    all_office_list = [o for o in OFFICES if o != "전체"]
-
-    # -------------------------
-    # DB → DataFrame 변환
-    # -------------------------
-    raw = load_rows_by_office_from_db()
-    rows = []
-
-    for office, items in raw.items():
-        for r in items:
-            rows.append({
-                "발송대상": bool(r["use"]),       # ✔ 첫 번째 선택 컬럼 → 삭제 / 이걸 주 컬럼으로
-                "사업소명": office,
-                "담당자명": r["name"],
-                "이메일 ID": r["id"],
-                "도메인": r["domain"] or "kepco.co.kr",
-            })
-
-    df = pd.DataFrame(rows)
-
-    if df.empty:
-        df = pd.DataFrame({
-            "발송대상": [],
-            "사업소명": [],
-            "담당자명": [],
-            "이메일 ID": [],
-            "도메인": [],
-        })
-
-    df["도메인"] = df["도메인"].replace("", "kepco.co.kr")
-    df["도메인"] = df["도메인"].fillna("kepco.co.kr")
-
-
-    # @ 컬럼 추가
-    df["@"] = "@"
-
-    # 타입 강제 변환
-    df["발송대상"] = df["발송대상"].astype(bool)
-    df["사업소명"] = df["사업소명"].astype(str)
-    df["담당자명"] = df["담당자명"].astype(str)
-    df["이메일 ID"] = df["이메일 ID"].astype(str)
-    df["@"] = df["@"].astype(str)
-    df["도메인"] = df["도메인"].astype(str)
-
-
-    # -------------------------
-    # Data Editor
-    # -------------------------
-
-    column_order = [
-        "발송대상",
-        "사업소명",
-        "담당자명",
-        "이메일 ID",
-        "@",
-        "도메인",
-    ]
-
-
-    edited_df = st.data_editor(
-        df,
-        column_config={
-            "발송대상": st.column_config.CheckboxColumn("발송대상", default=True),
-            "사업소명": st.column_config.SelectboxColumn("사업소명", options=all_office_list),
-            "담당자명": st.column_config.TextColumn("담당자명"),
-            "이메일 ID": st.column_config.TextColumn("이메일 ID"),
-            "@": st.column_config.Column("@", disabled=True),
-            "도메인": st.column_config.Column("도메인", disabled=True),
-        },
-        column_order=column_order, 
-        num_rows="dynamic",
-        hide_index=True,
-        key="recipient_editor",
-        use_container_width=True,
-    )
-
-    if st.button("주소록 최종 저장", type="primary"):
-        save_rows_by_office_to_db(edited_df)
 
 
 
 def data_sync_page():
     st.title("🔄 데이터 업데이트")
-    if not st.session_state.admin_auth:
-        st.error("데이터 업데이트는 관리자만 사용할 수 있습니다.")
+
+    if not has_sync_access():
+        st.error("데이터 수집 권한이 없습니다.")
         return
 
     # ... (기존 데이터 업데이트 로직 유지)
@@ -2476,19 +1492,24 @@ def data_status_page():
             if rows:
                 data = []
                 for n in rows:
-                    data.append({
-                        "id": n.id, "⭐": "★" if n.is_favorite else "☆",
-                        "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
-                        "사업소": (n.assigned_office or "").replace("/", " "),
-                        "단계": n.stage or "", "사업명": n.project_name or "",
-                        "기관명": n.client or "", "소재지": n.address or "",
-                        "연락처": fmt_phone(n.phone_number or ""), "모델명": n.model_name or "",
-                        "수량": str(n.quantity or 0),
-                        "고효율 인증 여부": _normalize_cert(n.is_certified),
-                        "공고일자": date_str, "DETAIL_LINK": n.detail_link or "",
-                        "KAPT_CODE": n.kapt_code or "", "IS_FAVORITE": bool(n.is_favorite),
-                        "IS_NEW": False
-                    })
+                        data.append({
+                            "id": n.id,
+                            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
+                            "사업소": (n.assigned_office or "").replace("/", " "),
+                            "단계": n.stage or "",
+                            "사업명": n.project_name or "",
+                            "기관명": n.client or "",
+                            "소재지": n.address or "",
+                            "연락처": fmt_phone(n.phone_number or ""),
+                            "모델명": n.model_name or "",
+                            "수량": str(n.quantity or 0),
+                            "고효율 인증 여부": _normalize_cert(n.is_certified),
+                            "공고일자": date_str,
+                            "DETAIL_LINK": n.detail_link or "",
+                            "KAPT_CODE": n.kapt_code or "",
+                            "IS_NEW": False
+                        })
+
                 
                 df_day = pd.DataFrame(data)
                 
@@ -2502,49 +1523,6 @@ def data_status_page():
 # =========================================================
 # 7. 관리자 인증 / 사이드바 / 전체 앱 실행 (최종 수정)
 # =========================================================
-
-def admin_auth_modal():
-    """관리자 인증 모달 (일반 로그인 상태에서 추가 인증)"""
-    
-    if not st.session_state.get("logged_in_success", False):
-        return
-
-    if st.session_state.admin_auth:
-        st.success("✅ 관리자 인증 완료")
-        if st.sidebar.button("인증 해제", key="btn_admin_logout_sidebar"):
-            st.session_state.admin_auth = False
-            st.toast("관리자 권한이 해제되었습니다.")
-            st.rerun()
-        return
-    
-
-    # -------------------------
-    # 🔥 엔터 입력 시 자동 인증되도록 콜백 추가
-    # -------------------------
-    def _admin_submit():
-        pwd = st.session_state.get("sidebar_admin_password_input", "")
-        if pwd == ADMIN_PASSWORD:
-            st.session_state.admin_auth = True
-            st.toast("✅ 인증 성공! 관리자 권한이 활성화되었습니다.", icon="✅")
-            st.rerun()
-        else:
-            st.error("비밀번호가 올바르지 않습니다.")
-
-
-    with st.sidebar.expander("🔑 관리자 추가 인증"):
-        password = st.text_input(
-            "비밀번호를 입력하세요:", type="password", key="sidebar_admin_password_input",
-            label_visibility="collapsed"
-        )
-        
-        if st.button("인증", key="btn_admin_login_sidebar", use_container_width=True):
-            if password == ADMIN_PASSWORD:
-                st.session_state.admin_auth = True
-                st.toast("✅ 인증 성공! 관리자 권한이 활성화되었습니다.", icon="✅")
-                st.rerun()
-            else:
-                st.error("비밀번호가 올바르지 않습니다.")
-
 
 def eers_app():
     st.set_page_config(
@@ -2561,50 +1539,15 @@ def eers_app():
     
     # [쿠키 기반 로그인 상태 복구]
     cookie_manager = st.session_state["cookie_manager_instance"]
-    auth_cookie = cookie_manager.get("eers_auth_token")
 
-    if auth_cookie and not st.session_state.get("logged_in_success", False):
-        st.session_state["logged_in_success"] = True
-        st.session_state["target_email"] = auth_cookie
-        st.toast("쿠키를 통해 자동 로그인되었습니다.", icon="👋")
-        # 💡 [수정] 로그인 성공 시 auth_stage 초기화
-        st.session_state["auth_stage"] = "complete"
-
-    #start_auto_update_scheduler()
 
     # [사이드바 구성]
     with st.sidebar:
         st.header("EERS 업무 지원 시스템")
         
-        is_logged_in = st.session_state.get("logged_in_success", False)
-
-        if is_logged_in:
-            # 로그인된 상태
-            email_full = st.session_state.get("target_email", "")
-            st.markdown(f"**로그인:** <span style='text-decoration:none;'>{email_full}</span>", unsafe_allow_html=True)
 
 
-            if st.button("로그아웃", key="sidebar_logout_btn", type="secondary", use_container_width=True):
-                logout()
-                st.rerun()
 
-        else:
-            # 로그인 안된 상태 → 로그인 버튼만 보이게 함
-            if st.button("🔑 로그인", key="sidebar_login_btn", type="primary", use_container_width=True):
-                st.session_state["show_login_dialog"] = True
-                st.session_state["auth_stage"] = "input_email"
-                st.rerun()
-
-        # 로그인 UI 표시 (버튼 아래)
-        if st.session_state.get("show_login_dialog", False) and not st.session_state.get("logged_in_success"):
-            render_auth_ui()        
-
-        # 💡 [핵심] 로그인 상태에 따른 메뉴 분기
-        is_logged_in = st.session_state.get("logged_in_success", False)
-        is_admin = st.session_state.get("admin_auth", False)
-        
-        # 관리자 인증 (로그인 상태에서만 표시)
-        admin_auth_modal()
         
         st.markdown("---")
 
@@ -2626,23 +1569,10 @@ def eers_app():
         render_menu_button("공고 조회 및 검색")
 
 
-        # ---------------------------
-        # 로그인 후 메뉴
-        # ---------------------------
-        if is_logged_in:
-            st.markdown("### 👤 업무 담당자 기능")
-            render_menu_button("관심 고객 관리")
-            render_menu_button("데이터 현황")
+
+        render_menu_button("데이터 현황")
 
 
-        # ---------------------------
-        # 관리자 인증 후 메뉴
-        # ---------------------------
-        if is_admin:
-            st.markdown("### 🛠 관리자 기능")
-            render_menu_button("메일 발송")
-            render_menu_button("수신자 관리")
-            render_menu_button("데이터 업데이트")
 
 
 
@@ -2661,29 +1591,27 @@ def eers_app():
         if st.button("한전ON", key="link_kepco", use_container_width=True): open_new_tab("https://home.kepco.co.kr/kepco/CY/K/F/CYKFPP001/main.do?menuCd=FN0207")
         if st.button("에너지마켓 신청", key="link_enmarket", use_container_width=True): open_new_tab("https://en-ter.co.kr/ft/biz/eers/eersApply/info.do")
 
+        # ==========================
+        # 사이드바 맨 아래 - 데이터 수집 캡션
+        # ==========================
+
+
+        st.markdown("<div style='height:40px'></div>", unsafe_allow_html=True)
+
+        render_sidebar_sync_caption()
+
     # [페이지 라우팅]
     page = st.session_state.route_page
     if page == "공고 조회 및 검색":
         main_page()
-    elif page == "관심 고객 관리" and is_logged_in:
-        favorites_page()
-    elif page == "메일 발송" and is_admin:
-        mail_send_page()
-    elif page == "수신자 관리" and is_admin:
-        mail_manage_page()
-    elif page == "데이터 업데이트" and is_admin:
-        data_sync_page()
-    elif page == "데이터 현황" and is_logged_in:
+    elif page == "데이터 현황":
         data_status_page()
+    elif page == "데이터 업데이트":
+        data_sync_page()
     else:
-        # 로그인 필요 기능에 미로그인 상태로 접근 시 (혹시 모를 오류 대비)
         main_page()
 
-    # [로그인 다이얼로그 표시]
-    # 💡 [수정] show_login_dialog가 True일 때 팝업 호출
-    if st.session_state.get("show_login_dialog", False) and not st.session_state.get("logged_in_success"):
-            # login_dialog() # <-- render_auth_ui()로 통합되어 삭제됨
-            pass
+
 
 if __name__ == "__main__":
     if engine and not inspect(engine).has_table("notices"):
