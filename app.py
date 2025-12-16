@@ -106,7 +106,14 @@ if not SUPABASE_DATABASE_URL:
 #  - 로그인 = '수동 데이터 수집(API 호출)' 권한만 부여
 #  - 조회/다운로드/데이터현황은 비로그인 허용
 # =========================================================
-ACCESS_CODE = str(_cfg("ACCESS_CODE", "0000")).strip()  # 예: 4~8자리 권장
+ACCESS_CODE = os.environ.get("ACCESS_CODE")
+if not ACCESS_CODE:
+    raise RuntimeError("ACCESS_CODE 환경변수가 설정되지 않았습니다.")
+ACCESS_CODE = ACCESS_CODE.strip()
+
+st.sidebar.caption(f"[DEBUG] ACCESS_CODE length: {len(ACCESS_CODE)}")
+
+
 COOKIE_NAME = "eers_access"
 
 # 최소 동기화일
@@ -280,20 +287,35 @@ def _cookie_manager():
 
 
 def has_sync_access() -> bool:
-    """수동 데이터 수집 권한 여부(쿠키/세션)."""
+    # 이미 세션에 있으면 쿠키 접근 안 함
+    if st.session_state.get("sync_access", False):
+        return True
+
     cm = _cookie_manager()
     token = cm.get(cookie=COOKIE_NAME)
+
     if token == "1":
         st.session_state["sync_access"] = True
         return True
-    return bool(st.session_state.get("sync_access", False))
+
+    return False
 
 
 def grant_sync_access():
+    # 🔒 이미 쿠키 세팅 중이면 재호출 차단
+    if st.session_state.get("_setting_sync_cookie", False):
+        return
+
+    st.session_state["_setting_sync_cookie"] = True
+
     cm = _cookie_manager()
     st.session_state["sync_access"] = True
+
     expire_date = datetime.now() + timedelta(days=180)
     cm.set(COOKIE_NAME, "1", expires_at=expire_date)
+
+    # 다음 rerun에서 다시 set 안 하도록
+    st.session_state["_setting_sync_cookie_done"] = True
 
 
 def revoke_sync_access():
@@ -304,24 +326,21 @@ def revoke_sync_access():
         pass
     st.session_state["sync_access"] = False
 
-
 def render_sidebar_sync_caption():
-    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+    st.sidebar.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
 
-    # 상태
+    # 이미 관리자면 아무것도 안 보임
+    if has_sync_access():
+        return
+
     st.session_state.setdefault("show_sync_code", False)
 
-    # 눈에 안 띄는 캡션
-    clicked = st.markdown(
-        "<div style='color:#999; font-size:12px; cursor:pointer;'>ⓘ 데이터 관리</div>",
-        unsafe_allow_html=True
-    )
-
-    if st.sidebar.checkbox("관리자 기능 열기", key="toggle_sync", label_visibility="collapsed"):
+    # 아주 작은 캡션
+    if st.sidebar.button("관리자", key="admin_caption"):
         st.session_state["show_sync_code"] = True
 
     if st.session_state["show_sync_code"]:
-        with st.sidebar.form("sync_auth_form"):
+        with st.sidebar.form("admin_auth_form"):
             code = st.text_input(
                 "인증번호",
                 type="password",
@@ -330,15 +349,19 @@ def render_sidebar_sync_caption():
             submitted = st.form_submit_button("확인")
 
         if submitted:
-            if code.strip() == ACCESS_CODE:
+            input_code = code.strip().replace("\n", "").replace("\r", "")
+            if input_code == ACCESS_CODE:
                 grant_sync_access()
                 st.session_state["show_sync_code"] = False
-                st.sidebar.success("관리자 권한 활성화")
                 st.rerun()
             else:
                 st.sidebar.error("인증번호가 올바르지 않습니다.")
 
 
+st.sidebar.caption(
+    f"sync_access={st.session_state.get('sync_access')} "
+    f"cookie_set={st.session_state.get('_setting_sync_cookie_done')}"
+)
 
 # =========================================================
 # 2) 세션 기본값
