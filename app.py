@@ -306,54 +306,38 @@ def revoke_sync_access():
 
 
 def render_sidebar_sync_caption():
-    """
-    사이드바 맨 아래 회색 캡션:
-    - 클릭하면 코드 입력창만 노출
-    - 코드 일치 시 sync_access 부여
-    """
-    st.sidebar.markdown(
-        "<div style='margin-top:12px;'></div>",
+    st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
+
+    # 상태
+    st.session_state.setdefault("show_sync_code", False)
+
+    # 눈에 안 띄는 캡션
+    clicked = st.markdown(
+        "<div style='color:#999; font-size:12px; cursor:pointer;'>ⓘ 데이터 관리</div>",
         unsafe_allow_html=True
     )
 
-    # 토글 상태
-    st.session_state.setdefault("show_sync_code", False)
+    if st.sidebar.checkbox("관리자 기능 열기", key="toggle_sync", label_visibility="collapsed"):
+        st.session_state["show_sync_code"] = True
 
-    # 회색 캡션(클릭 영역)
-    caption_clicked = st.sidebar.button(
-        "데이터 수집",
-        key="cap_sync",
-        type="secondary",
-        use_container_width=True
-    )
-
-    if caption_clicked:
-        st.session_state["show_sync_code"] = not st.session_state["show_sync_code"]
-
-    # 토글 열렸을 때만 입력창
     if st.session_state["show_sync_code"]:
-        code = st.sidebar.text_input(
-            "인증번호",
-            type="password",
-            key="sync_code_input",
-            label_visibility="collapsed",
-            placeholder="인증번호 입력"
-        )
-        if st.sidebar.button("확인", key="sync_code_submit", use_container_width=True):
-            if str(code).strip() == ACCESS_CODE and ACCESS_CODE:
+        with st.sidebar.form("sync_auth_form"):
+            code = st.text_input(
+                "인증번호",
+                type="password",
+                placeholder="관리자 인증번호"
+            )
+            submitted = st.form_submit_button("확인")
+
+        if submitted:
+            if code.strip() == ACCESS_CODE:
                 grant_sync_access()
                 st.session_state["show_sync_code"] = False
-                st.sidebar.success("권한이 활성화되었습니다.")
+                st.sidebar.success("관리자 권한 활성화")
                 st.rerun()
             else:
                 st.sidebar.error("인증번호가 올바르지 않습니다.")
 
-    # 이미 권한이 있으면 아주 작게 “해제”만 제공 (원하면 제거 가능)
-    if has_sync_access():
-        with st.sidebar.expander("권한", expanded=False):
-            if st.button("권한 해제", key="sync_access_revoke", use_container_width=True):
-                revoke_sync_access()
-                st.rerun()
 
 
 # =========================================================
