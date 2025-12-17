@@ -17,6 +17,20 @@ from sqlalchemy import or_, func, inspect
 from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import extra_streamlit_components as stx
 
+import os
+import streamlit as st
+
+def get_secret(key: str, default=None):
+    """
+    Fly.io: 환경변수
+    로컬(Streamlit): st.secrets
+    """
+    if key in os.environ:
+        return os.environ.get(key)
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
 
 
 # ===== mobile dummy functions =====
@@ -129,15 +143,37 @@ SIX_MONTHS = timedelta(days=180)
 # =========================================================
 # 0-A. 공통 유틸
 # =========================================================
+# app.py (발췌) — last sync get/set 구현
+from database import get_db_session
 def _get_last_sync_datetime_from_meta():
-    # TODO: meta 테이블로 대체 가능. 현재는 임시.
-    return datetime.now() - timedelta(hours=2)
-
+    s = get_db_session()
+    try:
+        v = s.execute(text("SELECT v FROM meta_kv WHERE k='last_sync_dt'")).fetchone()
+        return datetime.fromisoformat(v[0]) if v else None
+    except Exception:
+        return None
+    finally:
+        s.close()
 
 def _set_last_sync_datetime_to_meta(dt: datetime):
-    # TODO: meta 테이블로 대체 가능. 현재는 임시.
-    pass
+    s = get_db_session()
+    try:
+        s.execute(text("""INSERT INTO meta_kv(k,v) VALUES('last_sync_dt', :v)
+                          ON CONFLICT (k) DO UPDATE SET v = excluded.v"""),
+                 {"v": dt.isoformat(timespec="seconds")})
+        s.commit()
+    finally:
+        s.close()
 
+# app 시작 시 한 번만
+start_auto_update_scheduler()
+
+# 사이드바 표시
+last_dt = _get_last_sync_datetime_from_meta()
+st.sidebar.info(
+    f"자동수집: 08:00/12:00/19:00\n"
+    f"마지막 수집: {last_dt or '기록 없음'}"
+)
 
 def is_weekend(d: date) -> bool:
     return d.weekday() >= 5
@@ -659,9 +695,19 @@ def _ensure_phone_inline(notice_id: int):
 # =========================================================
 
 def _show_kapt_detail_panel(rec: dict):
-    kapt_code = rec.get("KAPT_CODE")
+    # ✅ 다양한 형태의 단지 코드 필드명을 모두 대응
+    kapt_code = (
+        rec.get("KAPT_CODE")
+        or rec.get("APT_CODE")
+        or rec.get("kapt_code")
+        or rec.get("apt_code")
+    )
     if not kapt_code:
         st.error("단지 코드가 없어 상세 정보를 조회할 수 없습니다.")
+        # 기본정보라도 표시
+        st.write(f"**사업명:** {rec.get('사업명', '-')}")
+        st.write(f"**기관명:** {rec.get('기관명', '-')}")
+        st.write(f"**공고일자:** {rec.get('공고일자', '-')}")
         return
 
     _ensure_phone_inline(rec["id"])
@@ -1031,12 +1077,10 @@ background:#ffffff; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,0.05); h
 
                 st.markdown(card_html, unsafe_allow_html=True)
 
-                b1 = st.columns(2)
+                if st.button("🔍 상세", key=f"detail_card_{rec['id']}", use_container_width=True):
+                    popup_detail_panel(rec)
 
-      
-                with b1:
-                    if st.button("🔍 상세", key=f"detail_card_{rec['id']}", use_container_width=True):
-                        popup_detail_panel(rec)
+
 
 
 def render_notice_table(df):
@@ -1048,10 +1092,12 @@ def render_notice_table(df):
 
     df_disp = df.copy()
 
+    # ✅ 상세 아이콘 추가
     df_disp.insert(0, "상세", "🔍") 
 
+    # ✅ NEW 표시 로직 유지
     def format_title(row):
-        title = row["사업명"]
+        title = row.get("사업명", "")
         prefixes = []
         source = row.get("구분")
         pub_date_str = row.get("공고일자") 
@@ -1062,18 +1108,16 @@ def render_notice_table(df):
             if pub_date_str:
                 pub_date_str = str(pub_date_str).replace('.', '-') 
                 pub_date = pd.to_datetime(pub_date_str, errors='coerce').normalize()
-                
                 if not pd.isna(pub_date):
                     today = pd.Timestamp.now().normalize()
                     limit_date = today - BusinessDay(2)
-                    
                     if pub_date >= limit_date:
                         is_real_new = True
         except Exception:
             is_real_new = False
 
-        if source == "K-APT":
-            if is_real_new: prefixes.append("🔵 [NEW]")
+        if source == "K-APT" and is_real_new:
+            prefixes.append("🔵 [NEW]")
         elif is_existing_new:
             prefixes.append("🔴 [NEW]")
 
@@ -1081,85 +1125,36 @@ def render_notice_table(df):
 
     df_disp["사업명"] = df_disp.apply(format_title, axis=1)
 
+    # ✅ 목록형에도 APT_CODE 포함
     visible_cols = [
         "id", "상세", "순번", "구분", "사업소", "단계", "사업명", 
-        "기관명", "소재지", "연락처", "모델명", "수량", "고효율 인증 여부", "공고일자"
+        "기관명", "소재지", "연락처", "모델명", "수량",
+        "고효율 인증 여부", "공고일자", "APT_CODE"  # 추가됨
     ]
     final_cols = [c for c in visible_cols if c in df_disp.columns]
 
-    # ----------------------------------
-    # 2. AgGrid 옵션 설정 (편집 및 체크박스 활성화)
-    # ----------------------------------
-    gb = GridOptionsBuilder.from_dataframe(df_disp[final_cols])
-    
-    gb.configure_selection("single", use_checkbox=False, pre_selected_rows=[])
-    gb.configure_default_column(resizable=True, filterable=True, sortable=True)
-    gb.configure_column("id", hide=True)
-    gb.configure_column("상세", width=50, cellStyle={'textAlign': 'center'}, pinned='left')
-    gb.configure_column("순번", width=70, cellStyle={'textAlign': 'center'})
-    gb.configure_column("구분", width=90, cellStyle={'textAlign': 'center'})
-    gb.configure_column("단계", width=90, cellStyle={'textAlign': 'center'})
-    gb.configure_column("사업명", width=450)
-   
-    gb.configure_selection(
-        selection_mode="single",
-        use_checkbox=False
-    )
+    df_disp = df_disp[final_cols]
 
-    gb.configure_column(
-        "상세",
-        width=60,
-        cellStyle={
-            'textAlign': 'center',
-            'cursor': 'pointer',
-            'fontWeight': 'bold'
-        }
-    )
-
-    gb.configure_column("id", hide=True)
-    gb.configure_default_column(resizable=True, sortable=True, filter=True)
-
-
-    grid_response = AgGrid(
-        df_disp[final_cols],
-        gridOptions=gb.build(),
-        update_mode=GridUpdateMode.SELECTION_CHANGED,
-        data_return_mode=DataReturnMode.AS_INPUT,
-        height=350,
-        theme="streamlit"
-    )
-
-    selected_rows = grid_response.get("selected_rows")
-
-    if selected_rows:
-        if isinstance(selected_rows, list):
-            rec = selected_rows[0]
-        else:
-            rec = selected_rows.iloc[0].to_dict()
-
-        # 🔍 상세 컬럼 클릭 → 즉시 팝업
-        popup_detail_panel(rec)
-
-
-        
+    # ✅ GridOptionsBuilder 기본 구성
+    from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
+    gb = GridOptionsBuilder.from_dataframe(df_disp)
+    gb.configure_column("상세", width=80, pinned="left")
+    gb.configure_selection(selection_mode="single", use_checkbox=True)
     gridOptions = gb.build()
 
+    grid_response = AgGrid(
+        df_disp,
+        gridOptions=gridOptions,
+        data_return_mode=DataReturnMode.FILTERED,
+        update_mode=GridUpdateMode.NO_UPDATE,
+        height=520,
+        fit_columns_on_grid_load=True,
+    )
 
-
-    # ----------------------------------
-    # 4. 선택 및 토글 로직 처리 (데이터 비교)
-    # ----------------------------------
-
-
-    selected_rows = grid_response.get("selected_rows")
-
-    if selected_rows:
-        if isinstance(selected_rows, list):
-            return selected_rows[0]
-        else:
-            return selected_rows.iloc[0].to_dict()
-
-    return None
+    selected_rows = grid_response["selected_rows"]
+    if not selected_rows:
+        return None
+    return selected_rows[0]
 
 
 # =========================================================
@@ -1289,9 +1284,6 @@ def main_page():
         popup_detail_panel(selected_rec)
 
     # 페이징 생략
-
-
-
 
 
 

@@ -1,9 +1,9 @@
 # Writing the cleaned & adjusted collect_data.py with your requested changes.
 from typing import List, Dict, Optional, Tuple, Callable
-import sys, re
+import sys
 import json, time, requests
 # === 학교 힌트 로더 & 학교명 추출 ===
-import os, json, unicodedata
+import os, unicodedata
 from functools import lru_cache
 import re
 from requests.adapters import HTTPAdapter
@@ -12,11 +12,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert # <--- 함수 맨
 from database import Base, Notice, engine  # noqa
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import IntegrityError
-import re, time
+import time
 from typing import Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
-
+import streamlit as st
 try:
     from bjd_mapper import get_bjd_name
     HAS_BJD_MAPPER = True
@@ -25,6 +25,22 @@ except ImportError:
     HAS_BJD_MAPPER = False
 import re
 from difflib import SequenceMatcher
+from contextlib import contextmanager
+
+@contextmanager
+def get_session():
+    s = Session()
+    try:
+        yield s
+        s.commit()
+    except:
+        s.rollback()
+        raise
+    finally:
+        s.close()
+
+
+
 
 # -------------------------------------------------------
 # CONFIG LOADER (로컬 config.py + Streamlit secrets 자동 지원)
@@ -49,19 +65,45 @@ except:
     _local_config = None
     HAS_LOCAL_CONFIG = False
 
-
-# 3) 최종 config getter
+# 3) 최종 config getter (Fly.io 대응)
 def _cfg(key: str, default=None):
-    # 로컬 개발환경 우선
+    """
+    우선순위
+    1. 환경변수 (Fly.io, Docker, 운영)
+    2. 로컬 config.py
+    3. Streamlit Cloud secrets.toml
+    4. default
+    """
+
+    # 1️⃣ Fly.io / Docker
+    if key in os.environ:
+        return os.environ.get(key)
+
+    # 2️⃣ 로컬 개발환경
     if HAS_LOCAL_CONFIG and hasattr(_local_config, key):
         return getattr(_local_config, key)
 
-    # Streamlit Cloud – secrets.toml 우선
-    if HAS_ST:
+    # 3️⃣ Streamlit Cloud
+    try:
         return st.secrets.get(key, default)
+    except Exception:
+        return default
 
-    # 둘 다 없으면 default
-    return default
+# =========================
+# API Keys (Fly.io secrets)
+# =========================
+
+NARA_SERVICE_KEY = _cfg("NARA_SERVICE_KEY")
+KEA_SERVICE_KEY  = _cfg("KEA_SERVICE_KEY")
+KAPT_SERVICE_KEY = _cfg("KAPT_SERVICE_KEY")
+
+if not NARA_SERVICE_KEY:
+    raise RuntimeError("NARA_SERVICE_KEY 누락")
+if not KEA_SERVICE_KEY:
+    raise RuntimeError("KEA_SERVICE_KEY 누락")
+if not KAPT_SERVICE_KEY:
+    raise RuntimeError("KAPT_SERVICE_KEY 누락")
+
 
 
 def normalize_model_for_compare(m: str) -> str:
