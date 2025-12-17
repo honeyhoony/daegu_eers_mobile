@@ -160,3 +160,82 @@ def _kea_cache_set(session, model: str, flag: int):
             "ts": datetime.utcnow().isoformat(timespec="seconds")
         }
     )
+
+
+# database.py (간단 버전)
+from sqlalchemy import Table, Column, String, MetaData
+meta = MetaData()
+MetaKV = Table(
+    "meta_kv", meta,
+    Column("k", String, primary_key=True),
+    Column("v", String),
+)
+Base.metadata.create_all(bind=engine)
+
+def set_meta(session, k, v):
+    session.execute(
+        text("""INSERT INTO meta_kv(k,v) VALUES(:k,:v)
+                ON CONFLICT (k) DO UPDATE SET v = excluded.v"""),
+        {"k": k, "v": v}
+    )
+
+def get_meta(session, k, default=None):
+    row = session.execute(text("SELECT v FROM meta_kv WHERE k=:k"), {"k": k}).fetchone()
+    return row[0] if row else default
+
+
+# ===============================
+# UPSERT 헬퍼 함수 (중복 제거 포함)
+# ===============================
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+
+def get_dialect_insert(engine):
+    """DB 종류에 따라 적절한 insert 함수 반환"""
+    dialect = engine.url.get_backend_name()
+    if "sqlite" in dialect:
+        return sqlite_insert
+    elif "postgres" in dialect:
+        return pg_insert
+    else:
+        raise RuntimeError(f"Unsupported DB dialect: {dialect}")
+
+def dedupe_by_unique_key(rows):
+    """중복 제거"""
+    seen = {}
+    for r in rows:
+        key = (r["source_system"], r["detail_link"], r["model_name"], r["assigned_office"])
+        seen[key] = r
+    return list(seen.values())
+
+def bulk_upsert_notices(session, rows, engine):
+    """DB 종류 무관한 안전한 UPSERT"""
+    rows = dedupe_by_unique_key(rows)
+    insert_fn = get_dialect_insert(engine)
+    stmt = insert_fn(Notice).values(rows)
+
+    # PostgreSQL용 ON CONFLICT 처리
+    if "postgres" in engine.url.get_backend_name():
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["source_system", "detail_link", "model_name", "assigned_office"],
+            set_={
+                "stage": stmt.excluded.stage,
+                "biz_type": stmt.excluded.biz_type,
+                "project_name": stmt.excluded.project_name,
+                "client": stmt.excluded.client,
+                "address": stmt.excluded.address,
+                "phone_number": stmt.excluded.phone_number,
+                "model_name": stmt.excluded.model_name,
+                "quantity": stmt.excluded.quantity,
+                "amount": stmt.excluded.amount,
+                "is_certified": stmt.excluded.is_certified,
+                "notice_date": stmt.excluded.notice_date,
+                "detail_link": stmt.excluded.detail_link,
+                "assigned_office": stmt.excluded.assigned_office,
+                "source_system": stmt.excluded.source_system,
+                "kapt_code": stmt.excluded.kapt_code,
+            },
+        )
+
+    session.execute(stmt)
+    session.commit()

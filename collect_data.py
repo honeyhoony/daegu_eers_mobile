@@ -1769,6 +1769,21 @@ def _assign_office_by_client_name(client_name: str) -> Optional[str]:
             return CLIENT_HINTS[kw]
     return None
 
+
+
+def filter_duplicates(items):
+    """source_system, detail_link, model_name, assigned_office 중복 필터"""
+    seen = set()
+    unique = []
+    for it in items:
+        key = (it["source_system"], it["detail_link"], it["model_name"], it["assigned_office"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(it)
+    return unique
+
+
 # =========================
 # 저장 로직
 # =========================
@@ -2086,6 +2101,35 @@ def _build_base_notice(stage: str, biz_type: str, project_name: str, client: str
         "source_system": source,
         "kapt_code": kapt_code, # 반환 딕셔셔리에 kapt_code 추가
     }
+
+# === 공공데이터포털 API 재시도 세션 ===
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import requests
+
+def build_retry_session():
+    """조달청 OpenAPI용 요청 세션(자동 재시도/백오프)"""
+    retry = Retry(
+        total=5,
+        backoff_factor=0.6,  # 0.6s, 1.2s, 2.4s ...
+        status_forcelist=(429, 500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+    s = requests.Session()
+    s.mount("http://", adapter)
+    s.mount("https://", adapter)
+    return s
+
+SESSION = build_retry_session()
+
+def get_json_with_retry(url, params, timeout=20):
+    """타임아웃 및 자동 재시도 포함 요청"""
+    r = SESSION.get(url, params=params, timeout=timeout)
+    r.raise_for_status()
+    return r.json()
+
 
 def fetch_kapt_basic_info(
     kapt_code: str,

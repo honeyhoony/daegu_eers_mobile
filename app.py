@@ -165,8 +165,6 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
     finally:
         s.close()
 
-# app 시작 시 한 번만
-start_auto_update_scheduler()
 
 # 사이드바 표시
 last_dt = _get_last_sync_datetime_from_meta()
@@ -611,42 +609,38 @@ def search_data():
     st.session_state["data_initialized"] = True
 
 
+
+
 # =========================================================
 # 5) 자동 업데이트 스케줄러 (유지)
-#   - 단, 실제 실행(start)은 앱 본문에서 선택적으로 호출
 # =========================================================
-@st.cache_resource
+import os, threading
+from datetime import datetime
+import time
+
 def start_auto_update_scheduler():
+    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
+    if os.getenv("RUN_SCHEDULER", "0") != "1":
+        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
+        return
+
     def scheduler_loop():
         last_run_hour = -1
         while True:
             now = datetime.now()
-
             if now.hour in [8, 12, 19]:
                 if now.minute == 0 and now.hour != last_run_hour:
+                    print(f"[Auto-Sync] {now}")
                     try:
-                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 시작")
-
-                        target_date_str = now.strftime("%Y%m%d")
-                        for stage in STAGES_CONFIG.values():
-                            fetch_data_for_stage(target_date_str, stage)
-
-                        _set_last_sync_datetime_to_meta(now)
-
-                        _get_new_item_counts_by_source_and_office.clear()
-                        load_data_from_db.clear()
-
-                        logger.info(f"[Auto-Sync] {now} - 자동 업데이트 완료")
-                        last_run_hour = now.hour
-
+                        # 기존 자동 수집 함수 호출
+                        run_collection_job()
                     except Exception as e:
-                        logger.error(f"[Auto-Sync] 오류 발생: {e}")
+                        print(f"[Auto-Sync Error] {e}")
+                    last_run_hour = now.hour
+            time.sleep(60)
 
-            time.sleep(30)
-
-    t = threading.Thread(target=scheduler_loop, daemon=True)
-    t.start()
-    logger.info(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+    print(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
 
 
 # =========================================================
@@ -1185,7 +1179,50 @@ def main_page():
         """, unsafe_allow_html=True
     )
 
-    st.title("💡 대구본부 EERS 업무 지원 시스템")
+
+
+    st.markdown(
+        """
+        <div style="
+            text-align:center;
+            background:linear-gradient(135deg, #f3f7ff, #e9eef9);
+            padding: 1.8rem 0 1.6rem 0;
+            border-radius: 14px;
+            box-shadow: 0 3px 8px rgba(0,0,0,0.07);
+            margin-bottom: 1.8rem;
+            font-family: 'Pretendard', 'Segoe UI', sans-serif;
+        ">
+            <h1 style="
+                font-weight:650;
+                color:#003EAA;
+                letter-spacing:-0.5px;
+                margin-bottom:0.4rem;
+            ">
+                EERS 업무 지원 시스템
+            </h1>
+            <p style="
+                font-size:1.08rem;
+                color:#444;
+                margin-top:0;
+                margin-bottom:0.3rem;
+            ">
+                나라장터·K-APT <strong>입찰정보를 간편하게 조회</strong>하고,<br>
+                고효율기기 <strong>수요 현황을 한눈에 확인</strong>하세요.
+            </p>
+            <p style="
+                font-size:0.95rem;
+                color:#666;
+                margin-top:0.8rem;
+            ">
+                대구본부 에너지효율부 EERS팀
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+
     st.subheader("🔍 검색 조건")
 
     # 💡 검색 조건 변경 시 즉시 검색
@@ -1285,7 +1322,12 @@ def main_page():
 
     # 페이징 생략
 
-
+def calc_progress(df):
+    """'신규' 또는 '갱신' 항목만 진행률에 포함"""
+    filtered = df[df["process_state"].isin(["NEW", "UPDATED"])]
+    if len(df) == 0:
+        return 0
+    return round(len(filtered) / len(df) * 100, 2)
 
 def data_sync_page():
     st.title("🔄 데이터 업데이트")
@@ -1294,14 +1336,14 @@ def data_sync_page():
         st.error("데이터 수집 권한이 없습니다.")
         return
 
-    # ... (기존 데이터 업데이트 로직 유지)
+    # --- 마지막 실행 시각 표시 ---
     last_dt = _get_last_sync_datetime_from_meta()
     last_txt = last_dt.strftime("%Y-%m-%d %H:%M") if last_dt else "기록 없음"
     st.info(f"마지막 API 호출 일시: **{last_txt}**")
     st.markdown("---")
 
+    # --- 날짜 설정 UI ---
     st.subheader("기간 설정")
-
     col_preset1, col_preset2 = st.columns(2)
 
     def set_sync_today():
@@ -1334,6 +1376,7 @@ def data_sync_page():
     st.caption("권장: 하루 단위로 업데이트하거나, 최근 1주/1개월 단위로 진행해 주세요. (API 한도 유의)")
     st.markdown("---")
 
+    # --- 동기화 실행 ---
     if st.button("선택 기간 업데이트 시작", type="primary", key="start_sync_btn"):
         if start_date > end_date:
             st.error("시작일은 종료일보다 늦을 수 없습니다.")
@@ -1341,68 +1384,89 @@ def data_sync_page():
         if (end_date - start_date).days >= 92:
             st.error("조회 기간은 최대 92일(3개월)까지만 가능합니다.")
             st.stop()
-        
+
         st.session_state["is_updating"] = True
 
-
-
+        # === 진행 상태 표시 영역 ===
         st.subheader("📊 데이터 수집 진행률")
         progress_bar = st.progress(0)
         status_text = st.empty()
+        log_placeholder = st.empty()
 
-        # 💡 로그 메시지를 Streamlit UI에 표시할 컨테이너 (st.info 사용)
-        log_placeholder = st.container()
-
-
-
+        # === 초기 변수 ===
         dates = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
         stages_to_run = list(STAGES_CONFIG.values())
         total_steps = len(dates) * len(stages_to_run)
         current_step = 0
 
-        # 로그 메시지 저장용 리스트
+        # === 로그/중복 관리 ===
         sync_logs = []
+        st.session_state.setdefault("_printed_done_msgs", set())
+        st.session_state.setdefault("_last_log_line", "")
 
+        # --- 로그 함수 ---
+        def append_log(msg: str):
+            """중복 방지 + 실시간 UI 반영"""
+            if st.session_state["_last_log_line"] == msg:
+                return
+            if msg.startswith("✔") and msg in st.session_state["_printed_done_msgs"]:
+                return
+
+            sync_logs.append(msg)
+            st.session_state["_last_log_line"] = msg
+            if msg.startswith("✔"):
+                st.session_state["_printed_done_msgs"].add(msg)
+
+            # ✅ 로그 덮어쓰기 (누적 X)
+            log_placeholder.code("\n".join(sync_logs[-200:]), language="text")
+
+        # --- 실행부 ---
         try:
             for d in dates:
                 disp_date = d.strftime("%Y-%m-%d")
+
                 for stage in stages_to_run:
                     name = stage.get("name", "Unknown Stage")
-                    status_text.markdown(f"**현재:** `{disp_date} / {name}`")
+
+                    # ✅ 현재 단계 표시 (덮어쓰기)
+                    status_text.markdown(f"**현재:** `{disp_date}` · **{name}**")
+                    append_log(f"▶ [{disp_date}] {name} 수집 시작")
 
                     try:
+                        # 실제 수집 실행
                         fetch_data_for_stage(d.strftime("%Y%m%d"), stage)
-                        sync_logs.append(f"✔ [{disp_date}] {name} 완료")
+                        append_log(f"✔ [{disp_date}] {name} 완료")
                     except Exception as e:
-                        error_msg = f"❌ [{disp_date}] {name} 오류 : {e}"
-                        sync_logs.append(error_msg)
-                        logger.error(error_msg) # 💡 콘솔 로그에 오류 기록
+                        append_log(f"❌ [{disp_date}] {name} 오류: {e}")
+                        logger.error(f"[SYNC] {disp_date} {name} 오류: {e}", exc_info=True)
 
+                    # ✅ 진행률 갱신 (덮어쓰기)
                     current_step += 1
                     pct = int(current_step / total_steps * 100)
                     progress_bar.progress(pct / 100)
                     status_text.markdown(f"**진행률:** {pct}% ({current_step}/{total_steps})")
 
-                    # 로그 업데이트: 매 단계마다 컨테이너를 비우고 다시 씁니다.
-                    with log_placeholder:
-                        st.info("\n".join(sync_logs))
-
-            status_text.success("🎉 전체 작업 완료!") #
-
+            # --- 완료 처리 ---
             progress_bar.progress(1.0)
-        
+            status_text.success("🎉 전체 작업 완료!")
+            append_log("✅ 모든 단계가 정상 완료되었습니다.")
+
+            # 캐시 초기화 및 메타데이터 업데이트
             _set_last_sync_datetime_to_meta(datetime.now())
             load_data_from_db.clear()
             _get_new_item_counts_by_source_and_office.clear()
+
             st.success("데이터 수집이 완료되었습니다. 상단 '공고 조회 및 검색'에서 다시 조회해 주세요.")
             st.session_state["is_updating"] = False
             st.rerun()
 
         except Exception as global_e:
-            status_text.error(f"⚠️ 동기화 작업 중 치명적인 오류 발생: {global_e}")
-            logger.error(f"Global Sync Error: {global_e}", exc_info=True) # 추가 로깅
+            status_text.error(f"⚠️ 동기화 작업 중 오류 발생: {global_e}")
+            logger.error(f"Global Sync Error: {global_e}", exc_info=True)
+
         finally:
             st.session_state["is_updating"] = False
+
 
 
 def data_status_page():
@@ -1552,6 +1616,20 @@ def data_status_page():
 # =========================================================
 
 def eers_app():
+    import streamlit as st
+
+    st.markdown(
+        """
+        <link rel="manifest" href="manifest.json">
+        <link rel="icon" type="image/png" sizes="192x192" href="eers_icon_192.png">
+        <link rel="apple-touch-icon" href="eers_icon_512.png">
+        <meta name="apple-mobile-web-app-capable" content="yes">
+        <meta name="apple-mobile-web-app-status-bar-style" content="default">
+        <meta name="theme-color" content="#0046AD">
+        """,
+        unsafe_allow_html=True
+    )
+
     st.set_page_config(
         page_title="EERS 업무 지원 시스템",
         layout="wide",
@@ -1641,4 +1719,7 @@ def eers_app():
 if __name__ == "__main__":
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
+    # app 시작 시 한 번만
+    start_auto_update_scheduler()
+
     eers_app()
