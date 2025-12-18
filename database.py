@@ -1,15 +1,20 @@
 from __future__ import annotations
 import os
 import re
+import logging
 from datetime import datetime
 from contextlib import contextmanager
-
 from sqlalchemy import (
     create_engine, Column, Integer, String, Boolean, UniqueConstraint,
-    DateTime, text
+    DateTime, text, Table, MetaData
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
-
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+# =========================================================
+# 로거 설정
+# =========================================================
+logger = logging.getLogger(__name__)
 
 # =========================================================
 # Base 선언
@@ -84,36 +89,36 @@ class MailHistory(Base):
 # =========================================================
 # DB URL 로딩
 # =========================================================
-DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL")
+DATABASE_URL = os.getenv("SUPABASE_DATABASE_URL", "")
 if not DATABASE_URL:
-    raise RuntimeError("SUPABASE_DATABASE_URL 환경변수 누락됨")
-
-DATABASE_URL = re.sub(r"[?&]pgbouncer=true", "", DATABASE_URL)
-
+    logger.warning("⚠️ SUPABASE_DATABASE_URL 환경변수 미설정 — SQLite로 fallback.")
+    DATABASE_URL = "sqlite:///eers.db"
+else:
+    DATABASE_URL = re.sub(r"[?&]pgbouncer=true", "", DATABASE_URL)
+    logger.info(f"✅ Using Supabase DB: {DATABASE_URL[:50]}...")
 
 # =========================================================
 # Engine & Session 생성
 # =========================================================
-engine = create_engine(
-    DATABASE_URL,
-    connect_args={"sslmode": "require"},
-    pool_size=5,
-    max_overflow=0,
-)
-
-SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
-
-
-# 테이블 생성
-Base.metadata.create_all(bind=engine)
-
+try:
+    if DATABASE_URL.startswith("sqlite"):
+        engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+    else:
+        engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
+    try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as e:
+        logger.warning(f"⚠️ 테이블 생성 중 오류 발생 (무시됨): {e}")
+except Exception as e:
+    logger.exception(f"❌ DB 연결 실패: {e}")
+    raise
 
 # =========================================================
-# 세션 제공 함수 (app.py에서 import)
+# 세션 제공 함수
 # =========================================================
 def get_db_session():
     return SessionLocal()
-
 
 # =========================================================
 # KEA 캐시 관련 함수
@@ -164,6 +169,9 @@ def _kea_cache_set(session, model: str, flag: int):
 
 # database.py (간단 버전)
 from sqlalchemy import Table, Column, String, MetaData
+# =========================================================
+# 메타 테이블 관리
+# =========================================================
 meta = MetaData()
 MetaKV = Table(
     "meta_kv", meta,
@@ -190,59 +198,28 @@ def get_meta(session, k, default=None):
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+# =========================================================
+# UPSERT 관련 유틸
+# =========================================================
 def get_dialect_insert(engine):
-    """DB 종류에 따라 적절한 insert 함수 반환"""
     dialect = engine.url.get_backend_name()
-    if "sqlite" in dialect:
-        return sqlite_insert
-    elif "postgres" in dialect:
-        return pg_insert
-    else:
-        raise RuntimeError(f"Unsupported DB dialect: {dialect}")
+    return sqlite_insert if "sqlite" in dialect else pg_insert
 
 def dedupe_by_unique_key(rows):
-    """source_system + detail_link + model_name + assigned_office 중복 제거"""
     seen = {}
     for r in rows:
-        key = (
-            r["source_system"],
-            r["detail_link"],
-            r["model_name"],
-            r["assigned_office"],
-        )
-        # 마지막 값으로 덮어쓰기 (최신 정보 유지)
+        key = (r["source_system"], r["detail_link"], r["model_name"], r["assigned_office"])
         seen[key] = r
     return list(seen.values())
 
 def bulk_upsert_notices(session, rows):
-    """중복 제거 후 안전하게 UPSERT"""
     if not rows:
         return
-
-    # ✅ [중복 제거 추가]
     rows = dedupe_by_unique_key(rows)
-
-    insert_stmt = pg_insert(Notice).values(rows)
+    insert_stmt = get_dialect_insert(engine)(Notice).values(rows)
     insert_stmt = insert_stmt.on_conflict_do_update(
         index_elements=["source_system", "detail_link", "model_name", "assigned_office"],
-        set_={
-            "stage": insert_stmt.excluded.stage,
-            "biz_type": insert_stmt.excluded.biz_type,
-            "project_name": insert_stmt.excluded.project_name,
-            "client": insert_stmt.excluded.client,
-            "address": insert_stmt.excluded.address,
-            "phone_number": insert_stmt.excluded.phone_number,
-            "model_name": insert_stmt.excluded.model_name,
-            "quantity": insert_stmt.excluded.quantity,
-            "amount": insert_stmt.excluded.amount,
-            "is_certified": insert_stmt.excluded.is_certified,
-            "notice_date": insert_stmt.excluded.notice_date,
-            "detail_link": insert_stmt.excluded.detail_link,
-            "assigned_office": insert_stmt.excluded.assigned_office,
-            "source_system": insert_stmt.excluded.source_system,
-            "kapt_code": insert_stmt.excluded.kapt_code,
-        },
+        set_={col.name: insert_stmt.excluded[col.name] for col in Notice.__table__.columns if col.name not in ("id",)}
     )
-
     session.execute(insert_stmt)
     session.commit()
