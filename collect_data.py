@@ -8,6 +8,27 @@ from sqlalchemy import text  # ✅ 'name text is not defined' 오류 방지용
 import os, unicodedata
 from functools import lru_cache
 import re
+# =================================================================
+# [NEW] 나라장터 품목정보에서 모델명 추출 (KEA 인증용)
+# =================================================================
+
+def _extract_model_from_item(item: dict) -> str:
+    """나라장터 품목정보에서 모델명을 추출 (보완 버전)"""
+    model = (item.get("prdctModelNo") or "").strip()
+    if model:
+        return model
+
+    # 모델명이 비어있으면 제품명 / 상세명 / 모델명 후보 필드에서 추출
+    name_fields = [item.get("prdctNm"), item.get("prdctDtlNm"), item.get("modelNm")]
+    for name in name_fields:
+        if not name:
+            continue
+        # 대문자+숫자+하이픈 조합 (예: IKELED-UHEGSF312-29)
+        match = re.search(r"[A-Z0-9\-]{6,}", name)
+        if match:
+            return match.group(0)
+    return ""
+
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from sqlalchemy.dialects.postgresql import insert as pg_insert # <--- 함수 맨 위(import 영역)에 추가
