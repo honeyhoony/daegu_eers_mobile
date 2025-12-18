@@ -965,18 +965,19 @@ import streamlit as st
 
 @st.dialog("상세 정보", width="large")
 def popup_detail_panel(rec: dict):
-    """AgGrid(공고목록)에서 클릭 시 모달로 상세 표시"""
-    # ⚠️ 중복 호출 방지: Streamlit은 한 번에 하나의 dialog만 허용
+    """AgGrid 선택 시 모달로 상세 표시 (중복 방지)"""
+    # 이미 다른 모달이 열려 있으면 경고만 표시하고 종료
     if st.session_state.get("_popup_active", False):
-        st.warning("다른 상세창이 열려 있습니다. 먼저 닫아주세요.")
+        st.warning("다른 상세 창이 열려 있습니다. 먼저 닫아주세요.")
         return
-    st.session_state["_popup_active"] = True
 
+    st.session_state["_popup_active"] = True
     try:
         show_detail_panel(rec)
     finally:
-        # dialog가 닫힐 때 자동으로 False로 초기화
+        # 사용자가 모달을 닫으면 다음 런에서 다시 열 수 있도록 해제
         st.session_state["_popup_active"] = False
+
 
 
 def render_detail_html(rec: dict) -> str:
@@ -1114,8 +1115,6 @@ background:#ffffff; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,0.05); h
                     popup_detail_panel(rec)
 
 
-
-
 def render_notice_table(df):
     st.markdown("### 📋 공고 목록")
 
@@ -1123,12 +1122,14 @@ def render_notice_table(df):
         st.info("표시할 공고가 없습니다.")
         return None
 
-    df_disp = df.copy()
+    # 원본 데이터 백업
+    df_full = df.copy()
 
     # ✅ 상세 아이콘 추가
+    df_disp = df_full.copy()
     df_disp.insert(0, "상세", "🔍")
 
-    # ✅ NEW 표시 로직 유지
+    # ✅ NEW 표시 로직
     def format_title(row):
         title = row.get("사업명", "")
         prefixes = []
@@ -1158,51 +1159,57 @@ def render_notice_table(df):
 
     df_disp["사업명"] = df_disp.apply(format_title, axis=1)
 
-    # ✅ 목록형에도 APT_CODE 포함
+    # ✅ 표시 컬럼 정의 (id 숨기기, APT_CODE 유지)
     visible_cols = [
         "상세", "순번", "구분", "사업소", "단계", "사업명",
         "기관명", "소재지", "연락처", "모델명", "수량",
         "고효율 인증 여부", "공고일자", "APT_CODE"
     ]
     final_cols = [c for c in visible_cols if c in df_disp.columns]
-    df_disp = df_disp[final_cols]
 
-    # ✅ GridOptionsBuilder 기본 구성
+    # ✅ 원본 인덱스 저장용 숨김 컬럼
+    df_disp["__ROW_ID"] = df_disp.index
+    df_disp = df_disp[[*final_cols, "__ROW_ID"]]
+
     from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
     gb = GridOptionsBuilder.from_dataframe(df_disp)
-
-    # ✅ id 컬럼 숨기기
-    if "id" in df_disp.columns:
-        gb.configure_column("id", hide=True)
-
     gb.configure_column("상세", width=80, pinned="left")
-
-    # ✅ 클릭 시 즉시 반응하도록 변경 (체크박스 제거)
+    gb.configure_column("__ROW_ID", hide=True)
     gb.configure_selection(selection_mode="single", use_checkbox=False)
-
     gridOptions = gb.build()
 
-    # ✅ update_mode 변경: 클릭 즉시 rerun
     grid_response = AgGrid(
         df_disp,
         gridOptions=gridOptions,
         data_return_mode=DataReturnMode.FILTERED,
-        update_mode=GridUpdateMode.SELECTION_CHANGED,   # ← 핵심 수정
+        update_mode=GridUpdateMode.SELECTION_CHANGED,
         height=520,
         fit_columns_on_grid_load=True,
         theme="alpine",
+        allow_unsafe_jscode=False,
+        key="notice_grid_main"
     )
 
-    selected_rows = grid_response["selected_rows"]
+    selected_rows = grid_response.get("selected_rows", [])
     if not selected_rows:
         return None
 
-    rec = selected_rows[0]
+    # ✅ 원본 레코드 복원 (KAPT_CODE 등 숨은 컬럼 포함)
+    try:
+        rid = int(selected_rows[0]["__ROW_ID"])
+        rec = df_full.loc[rid].to_dict()
+    except Exception:
+        rec = selected_rows[0]
 
-    st.session_state["selected_notice"] = rec
-    popup_detail_panel(rec)  # 단일 호출
+    # ✅ 중복 호출 방지 및 디바운스
+    if (
+        not st.session_state.get("_popup_active", False)
+        and st.session_state.get("_last_selected_row_id") != rid
+    ):
+        st.session_state["_last_selected_row_id"] = rid
+        popup_detail_panel(rec)
+
     return rec
-
 
 
 
@@ -1667,6 +1674,20 @@ def data_status_page():
                 if rec: popup_detail_panel(rec)
             else:
                 st.info("해당 조건의 데이터가 없습니다.")
+
+
+
+
+# === Dialog & Selection Guard (once) ===
+import streamlit as st
+
+if "_popup_active" not in st.session_state:
+    st.session_state["_popup_active"] = False
+
+if "_last_selected_row_id" not in st.session_state:
+    st.session_state["_last_selected_row_id"] = None
+
+
 
 
 # =========================================================
