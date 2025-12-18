@@ -1585,7 +1585,7 @@ def data_status_page():
     st.markdown("---")
     st.markdown(f"### 🗓️ {year}년 {month}월 ({selected_office})")
 
-    cal = calendar.Calendar()
+    cal = calendar.Calendar(firstweekday=6)  # 0=월요일, 6=일요일
     month_days = cal.monthdayscalendar(year, month)
 
     cols = st.columns(7)
