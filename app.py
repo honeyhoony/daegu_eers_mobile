@@ -1653,6 +1653,12 @@ def data_status_page():
 # =========================================================
 # 7. 관리자 인증 / 사이드바 / 전체 앱 실행 (최종 수정)
 # =========================================================
+st.set_page_config(
+    page_title="EERS 업무 지원 시스템",
+    layout="wide",
+    page_icon="💡",
+    initial_sidebar_state="expanded",
+)
 
 def eers_app():
     import streamlit as st
@@ -1669,12 +1675,7 @@ def eers_app():
         unsafe_allow_html=True
     )
 
-    st.set_page_config(
-        page_title="EERS 업무 지원 시스템",
-        layout="wide",
-        page_icon="💡",
-        initial_sidebar_state="expanded",
-    )
+
 
     if "cookie_manager_instance" not in st.session_state:
         st.session_state["cookie_manager_instance"] = stx.CookieManager(key="eers_cookie_manager")
