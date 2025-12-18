@@ -864,8 +864,8 @@ def _show_dlvr_detail_panel(rec: dict):
             gb.configure_default_column(resizable=True, sortable=True, minWidth=80)
             
             # ✅ id 컬럼 숨기기
-            if "id" in df.columns:
-                gb.configure_column("id", hide=True)
+            #if "id" in df.columns:
+            #    gb.configure_column("id", hide=True)
 
 
 
@@ -1182,18 +1182,19 @@ def render_notice_table(df):
         theme="alpine",
     )
 
-    # ✅ 선택 이벤트 처리
-    selected_rows = grid_response.get("selected_rows", [])
-    if selected_rows:
-        selected_row = selected_rows[0]
-        st.markdown("---")
-        st.subheader("📄 상세보기")
-        for k, v in selected_row.items():
-            st.write(f"**{k}**: {v}")
-        return selected_row
+    selected_rows = grid_response["selected_rows"]
+    if not selected_rows:
+        return None
 
-    st.info("상세보기를 위해 항목을 클릭하세요.")
-    return None
+    rec = selected_rows[0]
+
+    # ✅ 상세보기(모달) 팝업 호출
+    with st.container():
+        if st.button("📄 상세 보기", use_container_width=True):
+            popup_detail_panel(rec)
+
+    return rec
+
 
 
 
@@ -1241,10 +1242,11 @@ def main_page():
             font-family: 'Pretendard', 'Segoe UI', sans-serif;
         ">
             <h1 style="
-                font-weight:350;
+                font-weight:650;
                 color:#003EAA;
                 letter-spacing:-0.5px;
                 margin-bottom:0.4rem;
+                font-size:1.6rem; 
             ">
                 EERS 업무 지원 시스템
             </h1>
