@@ -19,6 +19,7 @@ import extra_streamlit_components as stx
 
 import os
 import streamlit as st
+from sqlalchemy import text
 
 def get_secret(key: str, default=None):
     """
@@ -617,6 +618,21 @@ def search_data():
 import os, threading
 from datetime import datetime
 import time
+
+# app.py (스케줄러 위쪽 근처)
+
+from collect_data import collect_all  # 실제 수집 함수명에 맞게 수정
+
+def run_collection_job():
+    """자동수집 스케줄러가 호출하는 래퍼 함수"""
+    try:
+        logger.info("[Auto-Sync] Starting collection job...")
+        collect_all()  # collect_data.py 안의 주 함수
+        logger.info("[Auto-Sync] Completed successfully.")
+    except Exception as e:
+        logger.exception("[Auto-Sync Error] %s", e)
+
+
 
 def start_auto_update_scheduler():
     """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""

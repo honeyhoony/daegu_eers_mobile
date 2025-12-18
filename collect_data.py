@@ -2,7 +2,9 @@
 from typing import List, Dict, Optional, Tuple, Callable
 import sys
 import json, time, requests
-# === 학교 힌트 로더 & 학교명 추출 ===
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from sqlalchemy import text  # ✅ 'name text is not defined' 오류 방지용
+
 import os, unicodedata
 from functools import lru_cache
 import re
@@ -293,17 +295,35 @@ def fetch_pages_parallel(url, params_list):
     return results
 
 
-
 def bulk_upsert_notices(notices):
+    """
+    PostgreSQL 기준 다중 UPSERT
+    - 중복된 (source_system, detail_link, model_name, assigned_office) 자동 제거
+    - 사용자 관리 컬럼(is_favorite, status, memo)은 갱신 제외
+    """
     if not notices:
         return
-    
-    session.begin()
-    try:
-        from sqlalchemy.dialects.postgresql import insert # collect_data.py 상단에 추가
 
-        stmt = insert(Notice).values(notices)
-        # 사용자가 직접 관리하는 is_favorite, status, memo는 업데이트에서 제외
+    # ✅ 중복 제거
+    seen = {}
+    for r in notices:
+        key = (
+            r.get("source_system"),
+            r.get("detail_link"),
+            r.get("model_name"),
+            r.get("assigned_office"),
+        )
+        seen[key] = r
+    deduped = list(seen.values())
+
+    from sqlalchemy.dialects.postgresql import insert
+    from database import Notice, engine, SessionLocal  # engine/session 가져오기
+
+    session = SessionLocal()
+    try:
+        stmt = insert(Notice).values(deduped)
+
+        # 사용자 직접 관리 컬럼 제외
         update_cols = {
             col.name: col
             for col in stmt.excluded
@@ -311,18 +331,22 @@ def bulk_upsert_notices(notices):
         }
 
         stmt = stmt.on_conflict_do_update(
-            # Notice 모델의 __table_args__에 정의된 UniqueConstraint 이름과 일치해야 함
-            index_elements=["source_system", "detail_link", "model_name", "assigned_office"],
-            set_=update_cols
+            index_elements=[
+                "source_system", "detail_link", "model_name", "assigned_office"
+            ],
+            set_=update_cols,
         )
 
         session.execute(stmt)
         session.commit()
+        print(f"  [OK] Bulk upsert 완료 ({len(deduped)}건, 중복 제거됨: {len(notices) - len(deduped)})")
+
     except Exception as e:
         session.rollback()
         print(f"  [Error] Bulk upsert 실패: {e}")
 
-
+    finally:
+        session.close()
 
 
 
@@ -483,7 +507,7 @@ _adapter = HTTPAdapter(
 )
 SESSION.mount("http://", _adapter)
 SESSION.mount("https://", _adapter)
-DEFAULT_TIMEOUT = (5, 20)  # (connect, read)
+DEFAULT_TIMEOUT = (5, 30)  # (connect, read)
 
 # =========================
 # 유틸
@@ -956,7 +980,8 @@ def lookup_apt_by_code(kapt_code: str) -> tuple[str, str, str]:
 
 
 
-def http_get_json(url: str, params: dict, *, retries: int = 3, timeout: int = 12, backoff: float = 0.8):
+def http_get_json(url: str, params: dict, *, retries: int = 3, timeout: int = 25, backoff: float = 0.8):
+
     """
     안전 JSON GET:
     - JSON 아닌 응답(빈 문자열/HTML/XML)일 때 None 반환
@@ -2111,8 +2136,8 @@ def build_retry_session():
     """조달청 OpenAPI용 요청 세션(자동 재시도/백오프)"""
     retry = Retry(
         total=5,
-        backoff_factor=0.6,  # 0.6s, 1.2s, 2.4s ...
-        status_forcelist=(429, 500, 502, 503, 504),
+        backoff_factor=1.5,  # 0.6s, 1.2s, 2.4s ...
+        status_forcelist=(500, 502, 503, 504),
         allowed_methods=frozenset(["GET"]),
         raise_on_status=False,
     )
@@ -3234,12 +3259,20 @@ def _fetch_dlvr_detail(req_no: str):
 def _fetch_dlvr_detail_with_key(req_no: str):
     return req_no, _fetch_dlvr_detail(req_no)
 
+
+
 def fetch_and_process_delivery_requests(search_ymd: str):
+    """
+    나라장터 납품요구(Delivery Requests) 수집:
+    - 병렬 처리 최적화 (max_workers=6)
+    - timeout 연장 (25초)
+    - 실시간 진행률 로그
+    """
     print(f"\n--- [{to_ymd(search_ymd)}] 납품요구(나라장터) 수집 ---")
     buffer = []
-    CHUNK = 200  # 벌크 단위
+    CHUNK = 200
 
-    # 1) 총건수 1회
+    # 1) 총건수 조회
     first = http_get_json(api_url(DLVR_LIST_PATH), {
         "ServiceKey": _cfg("NARA_SERVICE_KEY"), "type": "json",
         "pageNo": "1", "numOfRows": "1",
@@ -3248,14 +3281,14 @@ def fetch_and_process_delivery_requests(search_ymd: str):
     body = _as_dict(first.get("response", {}).get("body"))
     total = int(body.get("totalCount", 0))
     if total == 0:
-        print("  - 데이터 없음"); return
+        print("  - 데이터 없음")
+        return
 
-    page_size   = 100
+    page_size = 100
     total_pages = (total + page_size - 1) // page_size
-    #print(f"  - 총 {total}건 / {total_pages}")
     print(f"  - 총 {total}건")
 
-    # 2) 페이지 병렬 (요약 목록)
+    # 2) 요약 목록 페이지 병렬 수집
     params_list = [{
         "ServiceKey": _cfg("NARA_SERVICE_KEY"), "type": "json",
         "pageNo": str(p), "numOfRows": str(page_size),
@@ -3263,10 +3296,12 @@ def fetch_and_process_delivery_requests(search_ymd: str):
     } for p in range(1, total_pages + 1)]
     pages = fetch_pages_parallel(api_url(DLVR_LIST_PATH), params_list)
 
-    # 3) 각 페이지에서 req_no 수집 + 상세 병렬
+    # 3) 각 req_no 수집 및 상세 호출 준비
     meta_by_req: Dict[str, Dict] = {}
     tasks = []
-    with ThreadPoolExecutor(max_workers=12) as ex:
+    total_req = 0
+
+    with ThreadPoolExecutor(max_workers=6) as ex:
         for data in pages:
             items = _as_items_list(_as_dict(data.get("response", {}).get("body")))
             for it in items:
@@ -3289,88 +3324,105 @@ def fetch_and_process_delivery_requests(search_ymd: str):
                     "hdr_qty": _to_int(it.get("dlvrReqQty") or it.get("reqQty") or it.get("totQty")),
                     "hdr_amt": _to_int(it.get("dlvrReqAmt")),
                 }
+                # ✅ timeout 연장 (25초) 버전의 _fetch_dlvr_detail_with_key 호출
                 tasks.append(ex.submit(_fetch_dlvr_detail_with_key, req_no))
+                total_req += 1
 
-    # 4) 상세 결과 받아서 저장(아니고: 후보 dict 수집)
-    for fut in as_completed(tasks):
-        req_no, products = fut.result()
-        meta = meta_by_req.get(req_no)
-        if not meta:
-            continue
+        print(f"  ▶ 상세정보 병렬 수집 시작 ({total_req}건)")
 
-        if products:
-            num_items = len(products)
-            for product in products:
-                prdct_nm = product.get("prdctNm") or ""
-                if not is_relevant_text(meta["req_nm"], prdct_nm):
-                    continue
+        done = 0
+        for fut in as_completed(tasks):
+            done += 1
+            try:
+                req_no, products = fut.result()
+            except Exception as e:
+                print(f"  ⚠️ {done}/{total_req} {req_no} 처리 중 오류: {e}")
+                continue
 
-                # 모델명 추출
-                model_name = product.get("modelNm")
-                if not model_name:
-                    name_all = product.get("prdctIdntNoNm", "")
-                    if name_all:
-                        parts = [p.strip() for p in name_all.split(",")]
-                        model_name = parts[2] if len(parts) >= 3 else name_all
-                model_name = model_name or "모델명 없음"
+            # 진행률 로그
+            print(f"    [진행] {done}/{total_req} ({done/total_req*100:.1f}%) - {req_no}")
 
-                # 1) KEA API + 유사도 기반 인증 판정
-                certification_status = kea_cert_with_similarity(model_name)
+            meta = meta_by_req.get(req_no)
+            if not meta:
+                continue
 
-                # 2) 기본적으로 API 응답이 불확실하면 보수적으로 다시 체크
-                if certification_status == "확인필요":
-                    tmp = kea_check_certification(model_name)
-                    if tmp != "확인필요":
-                        certification_status = tmp
+            if products:
+                num_items = len(products)
+                for product in products:
+                    prdct_nm = product.get("prdctNm") or ""
+                    if not is_relevant_text(meta["req_nm"], prdct_nm):
+                        continue
 
-                # 수량/금액
-                qty = (
-                    _to_int(product.get("prdctQty"))
-                    or _to_int(product.get("qty"))
-                    or _to_int(product.get("orderQty"))
-                    or _to_int(product.get("ordQty"))
-                    or 0
-                )
-                if qty == 0 and num_items == 1:
-                    qty = meta["hdr_qty"]
+                    model_name = product.get("modelNm") or ""
+                    if not model_name:
+                        name_all = product.get("prdctIdntNoNm", "")
+                        if name_all:
+                            parts = [p.strip() for p in name_all.split(",")]
+                            model_name = parts[2] if len(parts) >= 3 else name_all
+                    model_name = model_name or "모델명 없음"
 
-                amt_int = (
-                    _to_int(product.get("prdctAmt"))
-                    or _to_int(product.get("amt"))
-                    or (meta["hdr_amt"] if num_items == 1 else 0)
-                )
-                amt = str(amt_int)  # 문자열로 저장 권장
+                    # 인증 판정
+                    certification_status = kea_cert_with_similarity(model_name)
+                    if certification_status == "확인필요":
+                        tmp = kea_check_certification(model_name)
+                        if tmp != "확인필요":
+                            certification_status = tmp
 
+                    qty = (
+                        _to_int(product.get("prdctQty"))
+                        or _to_int(product.get("qty"))
+                        or _to_int(product.get("orderQty"))
+                        or _to_int(product.get("ordQty"))
+                        or 0
+                    )
+                    if qty == 0 and num_items == 1:
+                        qty = meta["hdr_qty"]
+
+                    amt_int = (
+                        _to_int(product.get("prdctAmt"))
+                        or _to_int(product.get("amt"))
+                        or (meta["hdr_amt"] if num_items == 1 else 0)
+                    )
+                    amt = str(amt_int)
+
+                    base = _build_base_notice(
+                        "납품요구", "물품", meta["req_nm"], meta["client_name"],
+                        meta["tel"], model_name, qty, amt,
+                        certification_status, meta["rcpt"], f"dlvrreq:{req_no}"
+                    )
+                    n = expand_and_store_with_priority(
+                        base, meta["client_code"], meta["mall_addr"], meta["client_name"], save=False
+                    )
+                    if n:
+                        buffer.append(n)
+            else:
                 base = _build_base_notice(
                     "납품요구", "물품", meta["req_nm"], meta["client_name"],
-                    meta["tel"], model_name, qty, amt,
-                    certification_status, meta["rcpt"], f"dlvrreq:{req_no}"
+                    meta["tel"], "세부내역 미확인",
+                    meta["hdr_qty"], str(meta["hdr_amt"]),
+                    "확인필요", meta["rcpt"], f"dlvrreq:{req_no}"
                 )
                 n = expand_and_store_with_priority(
                     base, meta["client_code"], meta["mall_addr"], meta["client_name"], save=False
                 )
-                if n: buffer.append(n)
-        else:
-            # 상세가 비어도 헤더 한 줄 저장
-            base = _build_base_notice(
-                "납품요구", "물품", meta["req_nm"], meta["client_name"],
-                meta["tel"], "세부내역 미확인",
-                meta["hdr_qty"], str(meta["hdr_amt"]),  # 문자열로
-                "확인필요", meta["rcpt"], f"dlvrreq:{req_no}"
-            )
-            n = expand_and_store_with_priority(
-                base, meta["client_code"], meta["mall_addr"], meta["client_name"], save=False
-            )
-            if n: buffer.append(n)
+                if n:
+                    buffer.append(n)
 
-        # 주기적 벌크 저장
-        if len(buffer) >= CHUNK:
-            bulk_upsert_notices(buffer); buffer.clear()
+            # 벌크 저장 (200건 단위)
+            if len(buffer) >= CHUNK:
+                bulk_upsert_notices(buffer)
+                buffer.clear()
 
-    # 남은 것 마무리
     if buffer:
         print(f"  [✅ 일괄 저장] {len(buffer)}건")
         bulk_upsert_notices(buffer)
+
+    print(f"✔ [{to_ymd(search_ymd)}] 납품요구 수집 완료 ({total_req}건 처리됨)")
+
+
+
+
+
 
 
 def resolve_address_from_bjd(addr_text, bjd_code) -> str:
