@@ -871,7 +871,7 @@ def _show_dlvr_detail_panel(rec: dict):
 
             grid_response = AgGrid(
                 df, gridOptions=grid_options, update_mode=GridUpdateMode.SELECTION_CHANGED,
-                height=250, theme="alpine", allow_unsafe_jscode=False, key=f"dlvr_grid_{req_no}"
+                height=250, theme="alpine", allow_unsafe_jscode=True, key=f"dlvr_grid_{req_no}"
             )
 
             selected_rows = grid_response.get("selected_rows", None)
@@ -1232,7 +1232,7 @@ def main_page():
             font-family: 'Pretendard', 'Segoe UI', sans-serif;
         ">
             <h1 style="
-                font-weight:650;
+                font-weight:350;
                 color:#003EAA;
                 letter-spacing:-0.5px;
                 margin-bottom:0.4rem;
