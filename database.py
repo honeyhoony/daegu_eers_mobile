@@ -201,41 +201,48 @@ def get_dialect_insert(engine):
         raise RuntimeError(f"Unsupported DB dialect: {dialect}")
 
 def dedupe_by_unique_key(rows):
-    """중복 제거"""
+    """source_system + detail_link + model_name + assigned_office 중복 제거"""
     seen = {}
     for r in rows:
-        key = (r["source_system"], r["detail_link"], r["model_name"], r["assigned_office"])
+        key = (
+            r["source_system"],
+            r["detail_link"],
+            r["model_name"],
+            r["assigned_office"],
+        )
+        # 마지막 값으로 덮어쓰기 (최신 정보 유지)
         seen[key] = r
     return list(seen.values())
 
-def bulk_upsert_notices(session, rows, engine):
-    """DB 종류 무관한 안전한 UPSERT"""
+def bulk_upsert_notices(session, rows):
+    """중복 제거 후 안전하게 UPSERT"""
+    if not rows:
+        return
+
+    # ✅ [중복 제거 추가]
     rows = dedupe_by_unique_key(rows)
-    insert_fn = get_dialect_insert(engine)
-    stmt = insert_fn(Notice).values(rows)
 
-    # PostgreSQL용 ON CONFLICT 처리
-    if "postgres" in engine.url.get_backend_name():
-        stmt = stmt.on_conflict_do_update(
-            index_elements=["source_system", "detail_link", "model_name", "assigned_office"],
-            set_={
-                "stage": stmt.excluded.stage,
-                "biz_type": stmt.excluded.biz_type,
-                "project_name": stmt.excluded.project_name,
-                "client": stmt.excluded.client,
-                "address": stmt.excluded.address,
-                "phone_number": stmt.excluded.phone_number,
-                "model_name": stmt.excluded.model_name,
-                "quantity": stmt.excluded.quantity,
-                "amount": stmt.excluded.amount,
-                "is_certified": stmt.excluded.is_certified,
-                "notice_date": stmt.excluded.notice_date,
-                "detail_link": stmt.excluded.detail_link,
-                "assigned_office": stmt.excluded.assigned_office,
-                "source_system": stmt.excluded.source_system,
-                "kapt_code": stmt.excluded.kapt_code,
-            },
-        )
+    insert_stmt = pg_insert(Notice).values(rows)
+    insert_stmt = insert_stmt.on_conflict_do_update(
+        index_elements=["source_system", "detail_link", "model_name", "assigned_office"],
+        set_={
+            "stage": insert_stmt.excluded.stage,
+            "biz_type": insert_stmt.excluded.biz_type,
+            "project_name": insert_stmt.excluded.project_name,
+            "client": insert_stmt.excluded.client,
+            "address": insert_stmt.excluded.address,
+            "phone_number": insert_stmt.excluded.phone_number,
+            "model_name": insert_stmt.excluded.model_name,
+            "quantity": insert_stmt.excluded.quantity,
+            "amount": insert_stmt.excluded.amount,
+            "is_certified": insert_stmt.excluded.is_certified,
+            "notice_date": insert_stmt.excluded.notice_date,
+            "detail_link": insert_stmt.excluded.detail_link,
+            "assigned_office": insert_stmt.excluded.assigned_office,
+            "source_system": insert_stmt.excluded.source_system,
+            "kapt_code": insert_stmt.excluded.kapt_code,
+        },
+    )
 
-    session.execute(stmt)
+    session.execute(insert_stmt)
     session.commit()

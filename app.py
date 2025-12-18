@@ -619,19 +619,16 @@ import os, threading
 from datetime import datetime
 import time
 
-# app.py (스케줄러 위쪽 근처)
-
-from collect_data import collect_all  # 실제 수집 함수명에 맞게 수정
+from collect_data import run_all_collections  # ✅ 함수명 교체
 
 def run_collection_job():
     """자동수집 스케줄러가 호출하는 래퍼 함수"""
     try:
         logger.info("[Auto-Sync] Starting collection job...")
-        collect_all()  # collect_data.py 안의 주 함수
+        run_all_collections()  # ✅ collect_all → run_all_collections 변경
         logger.info("[Auto-Sync] Completed successfully.")
     except Exception as e:
         logger.exception("[Auto-Sync Error] %s", e)
-
 
 
 def start_auto_update_scheduler():
@@ -857,6 +854,12 @@ def _show_dlvr_detail_panel(rec: dict):
             gb = GridOptionsBuilder.from_dataframe(df)
             gb.configure_default_column(resizable=True, sortable=True, minWidth=80)
             
+            # ✅ id 컬럼 숨기기
+            if "id" in df.columns:
+                gb.configure_column("id", hide=True)
+
+
+
             gb.configure_selection(
                 selection_mode="single", use_checkbox=False, pre_selected_rows=[0]
             )
@@ -1103,20 +1106,20 @@ def render_notice_table(df):
     df_disp = df.copy()
 
     # ✅ 상세 아이콘 추가
-    df_disp.insert(0, "상세", "🔍") 
+    df_disp.insert(0, "상세", "🔍")
 
     # ✅ NEW 표시 로직 유지
     def format_title(row):
         title = row.get("사업명", "")
         prefixes = []
         source = row.get("구분")
-        pub_date_str = row.get("공고일자") 
+        pub_date_str = row.get("공고일자")
         is_existing_new = row.get("IS_NEW")
 
         is_real_new = False
         try:
             if pub_date_str:
-                pub_date_str = str(pub_date_str).replace('.', '-') 
+                pub_date_str = str(pub_date_str).replace('.', '-')
                 pub_date = pd.to_datetime(pub_date_str, errors='coerce').normalize()
                 if not pd.isna(pub_date):
                     today = pd.Timestamp.now().normalize()
@@ -1137,34 +1140,54 @@ def render_notice_table(df):
 
     # ✅ 목록형에도 APT_CODE 포함
     visible_cols = [
-        "id", "상세", "순번", "구분", "사업소", "단계", "사업명", 
+        "상세", "순번", "구분", "사업소", "단계", "사업명",
         "기관명", "소재지", "연락처", "모델명", "수량",
-        "고효율 인증 여부", "공고일자", "APT_CODE"  # 추가됨
+        "고효율 인증 여부", "공고일자", "APT_CODE"
     ]
     final_cols = [c for c in visible_cols if c in df_disp.columns]
-
     df_disp = df_disp[final_cols]
 
     # ✅ GridOptionsBuilder 기본 구성
     from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
     gb = GridOptionsBuilder.from_dataframe(df_disp)
+
+    # ✅ id 컬럼 숨기기
+    if "id" in df_disp.columns:
+        gb.configure_column("id", hide=True)
+
     gb.configure_column("상세", width=80, pinned="left")
-    gb.configure_selection(selection_mode="single", use_checkbox=True)
+
+    # ✅ 클릭 시 즉시 반응하도록 변경 (체크박스 제거)
+    gb.configure_selection(selection_mode="single", use_checkbox=False)
+
     gridOptions = gb.build()
 
+    # ✅ update_mode 변경: 클릭 즉시 rerun
     grid_response = AgGrid(
         df_disp,
         gridOptions=gridOptions,
         data_return_mode=DataReturnMode.FILTERED,
-        update_mode=GridUpdateMode.NO_UPDATE,
+        update_mode=GridUpdateMode.SELECTION_CHANGED,   # ← 핵심 수정
         height=520,
         fit_columns_on_grid_load=True,
+        theme="alpine",
     )
 
-    selected_rows = grid_response["selected_rows"]
-    if not selected_rows:
-        return None
-    return selected_rows[0]
+    # ✅ 선택 이벤트 처리
+    selected_rows = grid_response.get("selected_rows", [])
+    if selected_rows:
+        selected_row = selected_rows[0]
+        st.markdown("---")
+        st.subheader("📄 상세보기")
+        for k, v in selected_row.items():
+            st.write(f"**{k}**: {v}")
+        return selected_row
+
+    st.info("상세보기를 위해 항목을 클릭하세요.")
+    return None
+
+
+
 
 
 # =========================================================

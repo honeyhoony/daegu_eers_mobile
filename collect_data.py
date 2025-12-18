@@ -28,6 +28,7 @@ except ImportError:
 import re
 from difflib import SequenceMatcher
 from contextlib import contextmanager
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 @contextmanager
 def get_session():
@@ -3589,43 +3590,45 @@ if __name__ == "__main__":
     print("\n[완료] `data/eers_data.db` 파일의 내용을 확인하고, GUI를 실행하여 데이터가 정상 조회되는지 확인하세요.")
 
 
-    def collect_all(manual: bool = False):
+# ==========================================================
+# 전체 데이터 수집 통합 실행 함수
+# ==========================================================
 
-        from datetime import date
-        today = date.today().strftime("%Y-%m-%d")
+def run_all_collections(search_date: str | None = None):
+    """
+    입찰공고, 계약완료, 납품요구 (나라장터) 전체 통합 수집 실행
+    - search_date가 None이면 오늘 날짜 기준으로 실행
+    """
+    from datetime import date
 
-        print(f"\n▶ [{today}] 전체 데이터 수집 시작")
+    if not search_date:
+        search_date = date.today().strftime("%Y%m%d")
 
-        try:
-            # 1️⃣ 입찰공고
-            print(f"\n▶ [{today}] 입찰공고(나라장터) 수집 시작")
-            fetch_and_process_bids(today)
-            print(f"✔ [{today}] 입찰공고(나라장터) 완료")
+    print(f"\n▶ [{search_date}] 전체 수집 시작")
 
-            # 2️⃣ 계약완료
-            print(f"\n▶ [{today}] 계약완료(나라장터) 수집 시작")
-            fetch_and_process_contracts(today)
-            print(f"✔ [{today}] 계약완료(나라장터) 완료")
+    try:
+        from collect_data import (
+            fetch_and_process_bids,
+            fetch_and_process_contracts,
+            fetch_and_process_delivery_requests
+        )
 
-            # 3️⃣ 납품요구
-            print(f"\n▶ [{today}] 납품요구(나라장터) 수집 시작")
-            fetch_and_process_delivery_requests(today)
-            print(f"✔ [{today}] 납품요구(나라장터) 완료")
+        # 1️⃣ 입찰공고
+        print(f"\n▶ [{search_date}] 입찰공고(나라장터) 수집 시작")
+        fetch_and_process_bids(search_date)
+        print(f"✔ [{search_date}] 입찰공고(나라장터) 완료")
 
-            # 4️⃣ K-APT (선택적으로)
-            try:
-                from collect_kapt import fetch_kapt_bids, fetch_kapt_results
-                print(f"\n▶ [{today}] 입찰공고(K-APT) 수집 시작")
-                fetch_kapt_bids(today)
-                print(f"✔ [{today}] 입찰공고(K-APT) 완료")
+        # 2️⃣ 계약완료
+        print(f"\n▶ [{search_date}] 계약완료(나라장터) 수집 시작")
+        fetch_and_process_contracts(search_date)
+        print(f"✔ [{search_date}] 계약완료(나라장터) 완료")
 
-                print(f"\n▶ [{today}] 입찰결과(K-APT) 수집 시작")
-                fetch_kapt_results(today)
-                print(f"✔ [{today}] 입찰결과(K-APT) 완료")
-            except ImportError:
-                print("⚠️ K-APT 수집 모듈(collect_kapt.py)을 찾을 수 없습니다. 생략합니다.")
+        # 3️⃣ 납품요구
+        print(f"\n▶ [{search_date}] 납품요구(나라장터) 수집 시작")
+        fetch_and_process_delivery_requests(search_date)
+        print(f"✔ [{search_date}] 납품요구(나라장터) 완료")
 
-            print(f"\n✅ [{today}] 모든 단계 정상 완료")
+        print(f"\n✅ 모든 수집 단계가 정상 완료되었습니다.\n")
 
-        except Exception as e:
-            print(f"⚠️ 동기화 작업 중 오류 발생: {e}")
+    except Exception as e:
+        print(f"⚠️ 전체 수집 중 오류 발생: {e}")
