@@ -958,14 +958,25 @@ def show_detail_panel(rec: dict):
                 st.warning("상세 링크가 없습니다.")
 
 
-
 # =========================================================
-# 6-1. 팝업(모달) 래퍼 함수 추가
+# 6-1. 팝업(모달) 래퍼 함수
 # =========================================================
+import streamlit as st
 
 @st.dialog("상세 정보", width="large")
 def popup_detail_panel(rec: dict):
-    show_detail_panel(rec)
+    """AgGrid(공고목록)에서 클릭 시 모달로 상세 표시"""
+    # ⚠️ 중복 호출 방지: Streamlit은 한 번에 하나의 dialog만 허용
+    if st.session_state.get("_popup_active", False):
+        st.warning("다른 상세창이 열려 있습니다. 먼저 닫아주세요.")
+        return
+    st.session_state["_popup_active"] = True
+
+    try:
+        show_detail_panel(rec)
+    finally:
+        # dialog가 닫힐 때 자동으로 False로 초기화
+        st.session_state["_popup_active"] = False
 
 
 def render_detail_html(rec: dict) -> str:
@@ -1188,11 +1199,8 @@ def render_notice_table(df):
 
     rec = selected_rows[0]
 
-    # ✅ 상세보기(모달) 팝업 호출
-    with st.container():
-        if st.button("📄 상세 보기", use_container_width=True):
-            popup_detail_panel(rec)
-
+    st.session_state["selected_notice"] = rec
+    popup_detail_panel(rec)  # 단일 호출
     return rec
 
 
