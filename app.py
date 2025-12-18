@@ -20,6 +20,14 @@ import extra_streamlit_components as stx
 import os
 import streamlit as st
 from sqlalchemy import text
+from collect_data import (
+    fetch_data_for_stage,
+    STAGES_CONFIG,
+    fetch_kapt_basic_info,
+    fetch_kapt_maintenance_history,
+    fetch_dlvr_detail,      # ✅ 이 라인 추가
+    fetch_dlvr_header       # ✅ 필요 시 함께 추가
+)
 
 
 
@@ -43,15 +51,8 @@ def get_secret(key: str, default=None):
         return default
 
 
-# ===== mobile dummy functions =====
-def fetch_dlvr_header(req_no):
-    return {}
 
-def fetch_dlvr_detail(req_no):
-    return []
 
-def fetch_data_for_stage(*args, **kwargs):
-    return None
 
 STAGES_CONFIG = {
     "G2B": {"name": "G2B", "code": "g2b"},

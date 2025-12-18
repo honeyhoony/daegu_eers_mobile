@@ -3589,6 +3589,67 @@ if __name__ == "__main__":
     print(f"  - G2B 저장 건수: {g2b_count} 건")
     print("\n[완료] `data/eers_data.db` 파일의 내용을 확인하고, GUI를 실행하여 데이터가 정상 조회되는지 확인하세요.")
 
+def fetch_dlvr_detail(req_no: str):
+    """
+    나라장터 납품요구 상세목록 API 호출
+    """
+    url = api_url("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList")
+    params = {
+        "ServiceKey": NARA_SERVICE_KEY,
+        "type": "json",
+        "inqryDiv": "2",
+        "dlvrReqNo": req_no,
+    }
+    data = http_get_json(url, params)
+    items = _kapt_items_safely(data)
+    if not items:
+        print(f"[WARN] 납품요구 상세 없음 ({req_no})")
+        return []
+    return items
+
+
+def fetch_dlvr_header(req_no: str) -> dict:
+    """
+    나라장터 납품요구 기본정보 조회 API
+    """
+    try:
+        url = api_url("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqInfoList")
+        params = {
+            "ServiceKey": NARA_SERVICE_KEY,
+            "type": "json",
+            "inqryDiv": "2",
+            "dlvrReqNo": req_no
+        }
+        data = http_get_json(url, params)
+        items = _kapt_items_safely(data)
+        if not items:
+            return {}
+        return items[0]
+    except Exception as e:
+        print(f"[Error] fetch_dlvr_header({req_no}) 실패: {e}")
+        return {}
+
+def fetch_dlvr_detail(req_no: str) -> list[dict]:
+    """
+    나라장터 납품요구 상세(요청물품 목록) 조회 API
+    """
+    try:
+        url = api_url("/1230000/at/ShoppingMallPrdctInfoService/getDlvrReqDtlInfoList")
+        params = {
+            "ServiceKey": NARA_SERVICE_KEY,
+            "type": "json",
+            "inqryDiv": "2",
+            "dlvrReqNo": req_no
+        }
+        data = http_get_json(url, params)
+        items = _kapt_items_safely(data)
+        if isinstance(items, dict):
+            items = [items]
+        return items or []
+    except Exception as e:
+        print(f"[Error] fetch_dlvr_detail({req_no}) 실패: {e}")
+        return []
+
 
 # ==========================================================
 # 전체 데이터 수집 통합 실행 함수
