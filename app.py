@@ -1382,11 +1382,6 @@ def main_page():
         st.caption("💡 돋보기 아이콘을 클릭하면 상세 팝업이 열립니다.")
         selected_rec = render_notice_table(df)
 
-    if selected_rec:
-        popup_detail_panel(selected_rec)
-
-    # 페이징 생략
-
 def calc_progress(df):
     """'신규' 또는 '갱신' 항목만 진행률에 포함"""
     filtered = df[df["process_state"].isin(["NEW", "UPDATED"])]
