@@ -21,6 +21,15 @@ import os
 import streamlit as st
 from sqlalchemy import text
 
+
+
+st.set_page_config(
+    page_title="EERS 업무 지원 시스템",
+    layout="wide",
+    page_icon="💡",
+    initial_sidebar_state="expanded",
+)
+
 def get_secret(key: str, default=None):
     """
     Fly.io: 환경변수
@@ -1653,12 +1662,7 @@ def data_status_page():
 # =========================================================
 # 7. 관리자 인증 / 사이드바 / 전체 앱 실행 (최종 수정)
 # =========================================================
-st.set_page_config(
-    page_title="EERS 업무 지원 시스템",
-    layout="wide",
-    page_icon="💡",
-    initial_sidebar_state="expanded",
-)
+
 
 def eers_app():
     import streamlit as st
