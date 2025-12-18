@@ -3587,3 +3587,45 @@ if __name__ == "__main__":
     print(f"  - K-APT 저장 건수: {kapt_count} 건")
     print(f"  - G2B 저장 건수: {g2b_count} 건")
     print("\n[완료] `data/eers_data.db` 파일의 내용을 확인하고, GUI를 실행하여 데이터가 정상 조회되는지 확인하세요.")
+
+
+    def collect_all(manual: bool = False):
+
+        from datetime import date
+        today = date.today().strftime("%Y-%m-%d")
+
+        print(f"\n▶ [{today}] 전체 데이터 수집 시작")
+
+        try:
+            # 1️⃣ 입찰공고
+            print(f"\n▶ [{today}] 입찰공고(나라장터) 수집 시작")
+            fetch_and_process_bids(today)
+            print(f"✔ [{today}] 입찰공고(나라장터) 완료")
+
+            # 2️⃣ 계약완료
+            print(f"\n▶ [{today}] 계약완료(나라장터) 수집 시작")
+            fetch_and_process_contracts(today)
+            print(f"✔ [{today}] 계약완료(나라장터) 완료")
+
+            # 3️⃣ 납품요구
+            print(f"\n▶ [{today}] 납품요구(나라장터) 수집 시작")
+            fetch_and_process_delivery_requests(today)
+            print(f"✔ [{today}] 납품요구(나라장터) 완료")
+
+            # 4️⃣ K-APT (선택적으로)
+            try:
+                from collect_kapt import fetch_kapt_bids, fetch_kapt_results
+                print(f"\n▶ [{today}] 입찰공고(K-APT) 수집 시작")
+                fetch_kapt_bids(today)
+                print(f"✔ [{today}] 입찰공고(K-APT) 완료")
+
+                print(f"\n▶ [{today}] 입찰결과(K-APT) 수집 시작")
+                fetch_kapt_results(today)
+                print(f"✔ [{today}] 입찰결과(K-APT) 완료")
+            except ImportError:
+                print("⚠️ K-APT 수집 모듈(collect_kapt.py)을 찾을 수 없습니다. 생략합니다.")
+
+            print(f"\n✅ [{today}] 모든 단계 정상 완료")
+
+        except Exception as e:
+            print(f"⚠️ 동기화 작업 중 오류 발생: {e}")
