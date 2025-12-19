@@ -686,8 +686,8 @@ def _ensure_phone_inline(notice_id: int):
         session.add(n)
         session.commit()
 
-        load_data_from_db.clear()
-        _get_new_item_counts_by_source_and_office.clear()
+        st.cache_data.clear()
+        st.cache_resource.clear()
     except Exception as e:
         session.rollback()
         print(f"전화번호 보정 실패: {e}")
@@ -1277,8 +1277,8 @@ def main_page():
                 margin-top:0;
                 margin-bottom:0.3rem;
             ">
-                나라장터·K-APT <strong>입찰정보를 간편하게 조회</strong>하고,<br>
-                고효율기기 <strong>수요 현황을 한눈에 확인</strong>하세요.
+                <strong>공공 입찰정보</strong><strong>(나라장터, K-APT)를</strong><strong> 간편하게 조회</strong>하여,<br>
+                고효율 기기 <strong>수요 현황을 쉽게 확인</strong>하세요.
             </p>
             <p style="
                 font-size:0.95rem;
@@ -1524,6 +1524,9 @@ def data_sync_page():
 
             st.success("데이터 수집이 완료되었습니다. 상단 '공고 조회 및 검색'에서 다시 조회해 주세요.")
             st.session_state["is_updating"] = False
+            st.session_state["page"] = 1   # 목록 첫 페이지로
+            st.session_state.pop("_last_selected_row_id", None)
+
             st.rerun()
 
         except Exception as global_e:
@@ -1796,6 +1799,9 @@ if __name__ == "__main__":
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
     # app 시작 시 한 번만
-    start_auto_update_scheduler()
+    if "scheduler_started" not in st.session_state:
+        start_auto_update_scheduler()
+        st.session_state["scheduler_started"] = True
+
 
     eers_app()
