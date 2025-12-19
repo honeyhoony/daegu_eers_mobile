@@ -30,6 +30,13 @@ from collect_data import (
 )
 
 
+@st.cache_data(ttl=3600)
+def _cached_dlvr_detail(req_no):
+    return fetch_dlvr_detail(req_no)
+
+@st.cache_data(ttl=3600)
+def _cached_dlvr_header(req_no):
+    return fetch_dlvr_header(req_no)
 
 st.set_page_config(
     page_title="EERS 업무 지원 시스템",
@@ -486,107 +493,85 @@ def _get_new_item_counts_by_source_and_office() -> dict:
 # 4) 데이터 로딩 (공고 조회) - 비로그인 허용
 # =========================================================
 @st.cache_data(ttl=600, show_spinner="데이터를 조회 중...")
+
 def load_data_from_db(
-    office, source, start_date, end_date, keyword, only_cert, include_unknown, page,
+    office,
+    source,
+    start_date,
+    end_date,
+    keyword,
+    only_cert,
+    include_unknown,
+    page: int,
 ):
-    session = get_db_session()
-    if not session:
-        return pd.DataFrame(), 0
+    session = SessionLocal()
+    try:
+        query = session.query(Notice)
 
-    start_date_str = start_date.isoformat()
-    end_date_str = end_date.isoformat()
+        # ======================
+        # 필터 조건
+        # ======================
+        if office and office != "전체":
+            query = query.filter(Notice.assigned_office == office)
 
-    query = session.query(Notice).filter(
-        Notice.notice_date.between(start_date_str, end_date_str)
-    )
+        if source and source != "전체":
+            query = query.filter(Notice.source_system == source)
 
-    if source == "나라장터":
-        query = query.filter(Notice.source_system == "G2B")
-    elif source == "K-APT":
-        query = query.filter(Notice.source_system == "K-APT")
+        if keyword:
+            query = query.filter(Notice.project_name.ilike(f"%{keyword}%"))
 
-    if office and office != "전체":
-        query = query.filter(
-            or_(
-                Notice.assigned_office == office,
-                Notice.assigned_office.like(f"{office}/%"),
-                Notice.assigned_office.like(f"%/{office}"),
-                Notice.assigned_office.like(f"%/{office}/%"),
-            )
+        if only_cert:
+            query = query.filter(Notice.is_certified == "Y")
+
+        if not include_unknown:
+            query = query.filter(Notice.assigned_office != "관할지사확인요망")
+
+        # ======================
+        # 🔴 전체 건수 (페이지 계산용)
+        # ======================
+        total_items = query.count()
+
+        # ======================
+        # 🔴 페이징 핵심
+        # ======================
+        offset = (page - 1) * ITEMS_PER_PAGE
+
+        rows = (
+            query
+            .order_by(Notice.notice_date.desc())
+            .limit(ITEMS_PER_PAGE)
+            .offset(offset)
+            .all()
         )
 
-    if only_cert:
-        query = query.filter(
-            or_(
-                Notice.is_certified == "O", Notice.is_certified == "0",
-                Notice.is_certified == "Y", Notice.is_certified == "YES",
-                Notice.is_certified == "1", Notice.is_certified == "인증"
-            )
-        )
+        # ======================
+        # DataFrame 변환
+        # ======================
+        df = pd.DataFrame([{
+            "id": r.id,
+            "사업명": r.project_name,
+            "기관명": r.client,
+            "사업소": r.assigned_office,
+            "구분": r.source_system,
+            "공고일자": r.notice_date,
+            "모델명": r.model_name,
+            "수량": r.quantity,
+            "연락처": r.phone_number,
+            "DETAIL_LINK": r.detail_link,
+        } for r in rows])
 
-    if not include_unknown:
-        query = query.filter(
-            ~Notice.assigned_office.like("%/%"),
-            ~Notice.assigned_office.ilike("%불명%"),
-            ~Notice.assigned_office.ilike("%미확인%"),
-            ~Notice.assigned_office.ilike("%확인%"),
-            ~Notice.assigned_office.ilike("%미정%"),
-            ~Notice.assigned_office.ilike("%UNKNOWN%")
-        )
+        return df, total_items
 
-    keyword_text = (keyword or "").strip()
-    if keyword_text:
-        cols = [Notice.project_name, Notice.client, Notice.model_name]
-        terms = [t.strip() for t in keyword_text.split() if t.strip() and not t.startswith("-")]
-        if terms:
-            query = query.filter(or_(*[
-                or_(*[c.ilike(f"%{term}%") for c in cols]) for term in terms
-            ]))
-
-    total_items = query.count()
-    offset = (page - 1) * ITEMS_PER_PAGE
-    rows = (
-        query.order_by(Notice.notice_date.desc(), Notice.id.desc())
-        .offset(offset)
-        .limit(ITEMS_PER_PAGE)
-        .all()
-    )
-
-    data = []
-    today = date.today()
-    biz_today = today if not is_weekend(today) else prev_business_day(today)
-    biz_prev = prev_business_day(biz_today)
-    new_days = {biz_today.isoformat(), biz_prev.isoformat()}
-
-    for n in rows:
-        is_new = n.notice_date in new_days
-        phone_disp = fmt_phone(n.phone_number or "")
-        cert_val = _normalize_cert(n.is_certified)
-
-        data.append({
-            "id": n.id,
-            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
-            "사업소": (n.assigned_office or "").replace("/", "\n"),
-            "단계": n.stage or "",
-            "사업명": n.project_name or "",
-            "기관명": n.client or "",
-            "소재지": n.address or "",
-            "연락처": phone_disp,
-            "모델명": n.model_name or "",
-            "수량": str(n.quantity or 0),
-            "고효율 인증 여부": cert_val,
-            "공고일자": _as_date(n.notice_date).isoformat() if n.notice_date else "",
-            "DETAIL_LINK": n.detail_link or "",
-            "KAPT_CODE": n.kapt_code or "",
-            "IS_NEW": is_new,
-        })
-
-    df = pd.DataFrame(data)
-    session.close()
-    return df, total_items
+    finally:
+        session.close()
 
 
-def search_data():
+
+
+
+
+
+def search_data(reset_page: bool = False):
     # 안전한 엔진 체크
     if 'engine' in globals() and engine is not None:
         try:
@@ -596,7 +581,9 @@ def search_data():
         except Exception:
             pass
 
-    st.session_state["page"] = 1
+    # ✅ 최초 검색 또는 조건 변경 시에만 page 초기화
+    if reset_page or "page" not in st.session_state:
+        st.session_state["page"] = 1
 
     try:
         df, total_items = load_data_from_db(
@@ -804,6 +791,7 @@ def _show_kapt_detail_panel(rec: dict):
 
 
 def _show_dlvr_detail_panel(rec: dict):
+
     link = rec.get("DETAIL_LINK", "")
     try:
         req_no = link.split(":", 1)[1].split("|", 1)[0].split("?", 1)[0].strip()
@@ -811,9 +799,15 @@ def _show_dlvr_detail_panel(rec: dict):
         st.error("납품요구번호 파싱 실패")
         return
 
-    with st.spinner("상세 정보를 불러오는 중..."):
-        header = fetch_dlvr_header(req_no) or {}
-        items = fetch_dlvr_detail(req_no) or []
+    if st.session_state.get(f"_dlvr_loaded_{req_no}"):
+        header = _cached_dlvr_header(req_no)
+        items = _cached_dlvr_detail(req_no)
+    else:
+        with st.spinner("상세 정보를 불러오는 중..."):
+            header = _cached_dlvr_header(req_no)
+            items = _cached_dlvr_detail(req_no)
+        st.session_state[f"_dlvr_loaded_{req_no}"] = True
+
 
     dlvr_req_dt = _pick(header, "dlvrReqRcptDate", "rcptDate")
     req_name    = _pick(header, "dlvrReqNm", "reqstNm", "ttl") or rec.get('사업명', '')
@@ -1174,7 +1168,15 @@ def render_notice_table(df):
 
     from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
     gb = GridOptionsBuilder.from_dataframe(df_disp)
-    gb.configure_column("상세", width=80, pinned="left")
+    gb.configure_column(
+    "상세",
+    width=60,
+    pinned="left",
+    suppressMenu=True,
+    sortable=False
+)
+
+
     gb.configure_column("__ROW_ID", hide=True)
     gb.configure_selection(selection_mode="single", use_checkbox=False)
     gridOptions = gb.build()
@@ -1202,16 +1204,19 @@ def render_notice_table(df):
     except Exception:
         rec = selected_rows[0]
 
-    # ✅ 중복 호출 방지 및 디바운스
-    if (
-        not st.session_state.get("_popup_active", False)
-        and st.session_state.get("_last_selected_row_id") != rid
-    ):
+    # 🔥 선택된 행이 바뀌었을 때만 상세 표시
+    last_rid = st.session_state.get("_last_selected_row_id")
+
+    if last_rid != rid:
         st.session_state["_last_selected_row_id"] = rid
-        popup_detail_panel(rec)
+
+        # 사용자 의도 명확하게 보이도록 버튼 요구
+        if st.button("🔍 선택한 공고 상세보기", key=f"open_detail_{rid}"):
+            popup_detail_panel(rec)
+
+
 
     return rec
-
 
 
 
