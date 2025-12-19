@@ -28,7 +28,15 @@ from collect_data import (
     fetch_dlvr_detail,      # ✅ 이 라인 추가
     fetch_dlvr_header       # ✅ 필요 시 함께 추가
 )
-
+def start_auto_update_scheduler():
+    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
+    if os.getenv("RUN_SCHEDULER", "0") != "1":
+        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
+        return
+# app 시작 시 한 번만
+if "scheduler_started" not in st.session_state:
+    start_auto_update_scheduler()
+    st.session_state["scheduler_started"] = True
 
 @st.cache_data(ttl=3600)
 def _cached_dlvr_detail(req_no):
@@ -628,11 +636,7 @@ def run_collection_job():
         logger.exception("[Auto-Sync Error] %s", e)
 
 
-def start_auto_update_scheduler():
-    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
-    if os.getenv("RUN_SCHEDULER", "0") != "1":
-        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
-        return
+
 
     def scheduler_loop():
         last_run_hour = -1
@@ -1798,10 +1802,4 @@ def eers_app():
 if __name__ == "__main__":
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
-    # app 시작 시 한 번만
-    if "scheduler_started" not in st.session_state:
-        start_auto_update_scheduler()
-        st.session_state["scheduler_started"] = True
-
-
     eers_app()
