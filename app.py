@@ -29,6 +29,13 @@ from collect_data import (
     fetch_dlvr_header       # ✅ 필요 시 함께 추가
 )
 
+from datetime import datetime
+from zoneinfo import ZoneInfo  # Python 3.9+
+
+KST = ZoneInfo("Asia/Seoul")
+
+def now_kst():
+    return datetime.now(tz=KST)
 
 
 st.set_page_config(
@@ -356,7 +363,7 @@ def grant_sync_access():
     cm = _cookie_manager()
     st.session_state["sync_access"] = True
 
-    expire_date = datetime.now() + timedelta(days=180)
+    expire_date = now_kst() + timedelta(days=180)
     cm.set(COOKIE_NAME, "1", expires_at=expire_date)
 
     # 다음 rerun에서 다시 set 안 하도록
@@ -651,7 +658,7 @@ def start_auto_update_scheduler_once():
     def scheduler_loop():
         last_run_hour = -1
         while True:
-            now = datetime.now()
+            now = now_kst()
             if now.hour in [8, 19]:
                 if now.minute == 0 and now.hour != last_run_hour:
                     logger.info(f"[Auto-Sync] {now}")
@@ -1274,7 +1281,6 @@ def main_page():
             ">
                 <strong>공공입찰</strong>(나라장터·K-APT) 정보를 <strong>간편하게 조회</strong>하여,<br>
                 <strong>사업소별 고효율기기 수요 현황</strong>을 한눈에 파악하세요.
-
             </p>
             <p style="
                 font-size:0.6rem;
@@ -1287,7 +1293,6 @@ def main_page():
         """,
         unsafe_allow_html=True
     )
-
 
 
     st.subheader("🔍 검색 조건")
@@ -1514,7 +1519,7 @@ def data_sync_page():
             append_log("✅ 모든 단계가 정상 완료되었습니다.")
 
             # 캐시 초기화 및 메타데이터 업데이트
-            _set_last_sync_datetime_to_meta(datetime.now())
+            _set_last_sync_datetime_to_meta(now_kst())
             load_data_from_db.clear()
             _get_new_item_counts_by_source_and_office.clear()
 
@@ -1625,7 +1630,10 @@ def data_status_page():
             st.markdown("---")
             st.markdown(f"### 📂 {sel_date.strftime('%Y-%m-%d')} 데이터 목록")
             
-        df_day = load_status_day_data(date_str, selected_office)
+            date_str = sel_date.isoformat()
+
+            df_day = load_status_day_data(date_str, selected_office)
+
 
         if df_day.empty:
             st.info("해당 조건의 데이터가 없습니다.")
