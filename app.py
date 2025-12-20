@@ -7,8 +7,6 @@ import threading
 import calendar
 import logging
 import pandas as pd
-from database import SessionLocal
-
 
 from io import BytesIO
 from datetime import datetime, date, timedelta
@@ -30,99 +28,8 @@ from collect_data import (
     fetch_dlvr_detail,      # ✅ 이 라인 추가
     fetch_dlvr_header       # ✅ 필요 시 함께 추가
 )
-def start_auto_update_scheduler():
-    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
-    if os.getenv("RUN_SCHEDULER", "0") != "1":
-        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
-        return
-# app 시작 시 한 번만
-if "scheduler_started" not in st.session_state:
-    start_auto_update_scheduler()
-    st.session_state["scheduler_started"] = True
 
 
-
-
-# =========================================================
-# 5) 자동 업데이트 스케줄러 (정상 구조)
-# =========================================================
-import threading
-import time
-from datetime import datetime, timedelta, date
-from zoneinfo import ZoneInfo
-
-from collect_data import fetch_data_for_stage
-from database import get_meta, set_meta
-
-KST = ZoneInfo("Asia/Seoul")
-
-AUTO_SYNC_TIMES = [
-    (8, 0),   # 오전 8:00
-    (19, 0),  # 오후 7:00
-]
-
-_scheduler_started = False
-_scheduler_lock = threading.Lock()
-
-
-def run_auto_collection_today_and_yesterday():
-    """자동수집: 오늘 + 어제"""
-    today = datetime.now(KST).date()
-    targets = [today - timedelta(days=1), today]
-
-    logger.info(f"[AUTO] 수집 대상 날짜: {targets}")
-
-    for d in targets:
-        ymd = d.strftime("%Y%m%d")
-        for stage in STAGES_CONFIG.values():
-            fetch_data_for_stage(ymd, stage)
-
-    _set_last_sync_datetime_to_meta(datetime.now())
-    logger.info("[AUTO] 자동수집 완료")
-
-
-
-
-
-
-# =========================================================
-# 내부 자동수집 트리거 (Fly Cron용)
-# =========================================================
-import streamlit as st
-from database import get_meta, set_meta
-
-def auto_sync_endpoint():
-    st.write("AUTO SYNC ENDPOINT")
-
-    run_key = datetime.now().strftime("%Y-%m-%d_%H:%M")
-
-    session = get_db_session()
-    try:
-        last_key = get_meta(session, "AUTO_SYNC_LAST_RUN")
-        if last_key == run_key:
-            st.write("이미 실행됨:", run_key)
-            return
-        set_meta(session, "AUTO_SYNC_LAST_RUN", run_key)
-    finally:
-        session.close()
-
-    run_auto_collection_today_and_yesterday()
-    st.success("자동수집 완료")
-
-
-
-
-
-
-
-
-@st.cache_data(ttl=3600)
-def _cached_dlvr_detail(req_no):
-    return fetch_dlvr_detail(req_no)
-
-@st.cache_data(ttl=3600)
-def _cached_dlvr_header(req_no):
-    return fetch_dlvr_header(req_no)
 
 st.set_page_config(
     page_title="EERS 업무 지원 시스템",
@@ -273,7 +180,7 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
 # 사이드바 표시
 last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
-    f"자동수집: 08:00/19:00\n"
+    f"자동수집: 08:00/12:00/19:00\n"
     f"마지막 수집: {last_dt or '기록 없음'}"
 )
 
@@ -579,85 +486,107 @@ def _get_new_item_counts_by_source_and_office() -> dict:
 # 4) 데이터 로딩 (공고 조회) - 비로그인 허용
 # =========================================================
 @st.cache_data(ttl=600, show_spinner="데이터를 조회 중...")
-
 def load_data_from_db(
-    office,
-    source,
-    start_date,
-    end_date,
-    keyword,
-    only_cert,
-    include_unknown,
-    page: int,
+    office, source, start_date, end_date, keyword, only_cert, include_unknown, page,
 ):
-    session = SessionLocal()
-    try:
-        query = session.query(Notice)
+    session = get_db_session()
+    if not session:
+        return pd.DataFrame(), 0
 
-        # ======================
-        # 필터 조건
-        # ======================
-        if office and office != "전체":
-            query = query.filter(Notice.assigned_office == office)
+    start_date_str = start_date.isoformat()
+    end_date_str = end_date.isoformat()
 
-        if source and source != "전체":
-            query = query.filter(Notice.source_system == source)
+    query = session.query(Notice).filter(
+        Notice.notice_date.between(start_date_str, end_date_str)
+    )
 
-        if keyword:
-            query = query.filter(Notice.project_name.ilike(f"%{keyword}%"))
+    if source == "나라장터":
+        query = query.filter(Notice.source_system == "G2B")
+    elif source == "K-APT":
+        query = query.filter(Notice.source_system == "K-APT")
 
-        if only_cert:
-            query = query.filter(Notice.is_certified == "Y")
-
-        if not include_unknown:
-            query = query.filter(Notice.assigned_office != "관할지사확인요망")
-
-        # ======================
-        # 🔴 전체 건수 (페이지 계산용)
-        # ======================
-        total_items = query.count()
-
-        # ======================
-        # 🔴 페이징 핵심
-        # ======================
-        offset = (page - 1) * ITEMS_PER_PAGE
-
-        rows = (
-            query
-            .order_by(Notice.notice_date.desc())
-            .limit(ITEMS_PER_PAGE)
-            .offset(offset)
-            .all()
+    if office and office != "전체":
+        query = query.filter(
+            or_(
+                Notice.assigned_office == office,
+                Notice.assigned_office.like(f"{office}/%"),
+                Notice.assigned_office.like(f"%/{office}"),
+                Notice.assigned_office.like(f"%/{office}/%"),
+            )
         )
 
-        # ======================
-        # DataFrame 변환
-        # ======================
-        df = pd.DataFrame([{
-            "id": r.id,
-            "사업명": r.project_name,
-            "기관명": r.client,
-            "사업소": r.assigned_office,
-            "구분": r.source_system,
-            "공고일자": r.notice_date,
-            "모델명": r.model_name,
-            "수량": r.quantity,
-            "연락처": r.phone_number,
-            "DETAIL_LINK": r.detail_link,
-        } for r in rows])
+    if only_cert:
+        query = query.filter(
+            or_(
+                Notice.is_certified == "O", Notice.is_certified == "0",
+                Notice.is_certified == "Y", Notice.is_certified == "YES",
+                Notice.is_certified == "1", Notice.is_certified == "인증"
+            )
+        )
 
-        return df, total_items
+    if not include_unknown:
+        query = query.filter(
+            ~Notice.assigned_office.like("%/%"),
+            ~Notice.assigned_office.ilike("%불명%"),
+            ~Notice.assigned_office.ilike("%미확인%"),
+            ~Notice.assigned_office.ilike("%확인%"),
+            ~Notice.assigned_office.ilike("%미정%"),
+            ~Notice.assigned_office.ilike("%UNKNOWN%")
+        )
 
-    finally:
-        session.close()
+    keyword_text = (keyword or "").strip()
+    if keyword_text:
+        cols = [Notice.project_name, Notice.client, Notice.model_name]
+        terms = [t.strip() for t in keyword_text.split() if t.strip() and not t.startswith("-")]
+        if terms:
+            query = query.filter(or_(*[
+                or_(*[c.ilike(f"%{term}%") for c in cols]) for term in terms
+            ]))
+
+    total_items = query.count()
+    offset = (page - 1) * ITEMS_PER_PAGE
+    rows = (
+        query.order_by(Notice.notice_date.desc(), Notice.id.desc())
+        .offset(offset)
+        .limit(ITEMS_PER_PAGE)
+        .all()
+    )
+
+    data = []
+    today = date.today()
+    biz_today = today if not is_weekend(today) else prev_business_day(today)
+    biz_prev = prev_business_day(biz_today)
+    new_days = {biz_today.isoformat(), biz_prev.isoformat()}
+
+    for n in rows:
+        is_new = n.notice_date in new_days
+        phone_disp = fmt_phone(n.phone_number or "")
+        cert_val = _normalize_cert(n.is_certified)
+
+        data.append({
+            "id": n.id,
+            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
+            "사업소": (n.assigned_office or "").replace("/", "\n"),
+            "단계": n.stage or "",
+            "사업명": n.project_name or "",
+            "기관명": n.client or "",
+            "소재지": n.address or "",
+            "연락처": phone_disp,
+            "모델명": n.model_name or "",
+            "수량": str(n.quantity or 0),
+            "고효율 인증 여부": cert_val,
+            "공고일자": _as_date(n.notice_date).isoformat() if n.notice_date else "",
+            "DETAIL_LINK": n.detail_link or "",
+            "KAPT_CODE": n.kapt_code or "",
+            "IS_NEW": is_new,
+        })
+
+    df = pd.DataFrame(data)
+    session.close()
+    return df, total_items
 
 
-
-
-
-
-
-def search_data(reset_page: bool = False):
+def search_data():
     # 안전한 엔진 체크
     if 'engine' in globals() and engine is not None:
         try:
@@ -667,9 +596,7 @@ def search_data(reset_page: bool = False):
         except Exception:
             pass
 
-    # ✅ 최초 검색 또는 조건 변경 시에만 page 초기화
-    if reset_page or "page" not in st.session_state:
-        st.session_state["page"] = 1
+    st.session_state["page"] = 1
 
     try:
         df, total_items = load_data_from_db(
@@ -693,6 +620,50 @@ def search_data(reset_page: bool = False):
     st.session_state["data_initialized"] = True
 
 
+
+
+# =========================================================
+# 5) 자동 업데이트 스케줄러 (유지)
+# =========================================================
+import os, threading
+from datetime import datetime
+import time
+
+from collect_data import run_all_collections  # ✅ 함수명 교체
+
+def run_collection_job():
+    """자동수집 스케줄러가 호출하는 래퍼 함수"""
+    try:
+        logger.info("[Auto-Sync] Starting collection job...")
+        run_all_collections()  # ✅ collect_all → run_all_collections 변경
+        logger.info("[Auto-Sync] Completed successfully.")
+    except Exception as e:
+        logger.exception("[Auto-Sync Error] %s", e)
+
+
+def start_auto_update_scheduler():
+    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
+    if os.getenv("RUN_SCHEDULER", "0") != "1":
+        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
+        return
+
+    def scheduler_loop():
+        last_run_hour = -1
+        while True:
+            now = datetime.now()
+            if now.hour in [8, 12, 19]:
+                if now.minute == 0 and now.hour != last_run_hour:
+                    print(f"[Auto-Sync] {now}")
+                    try:
+                        # 기존 자동 수집 함수 호출
+                        run_collection_job()
+                    except Exception as e:
+                        print(f"[Auto-Sync Error] {e}")
+                    last_run_hour = now.hour
+            time.sleep(60)
+
+    threading.Thread(target=scheduler_loop, daemon=True).start()
+    print(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
 
 
 # =========================================================
@@ -728,8 +699,8 @@ def _ensure_phone_inline(notice_id: int):
         session.add(n)
         session.commit()
 
-        st.cache_data.clear()
-        st.cache_resource.clear()
+        load_data_from_db.clear()
+        _get_new_item_counts_by_source_and_office.clear()
     except Exception as e:
         session.rollback()
         print(f"전화번호 보정 실패: {e}")
@@ -833,7 +804,6 @@ def _show_kapt_detail_panel(rec: dict):
 
 
 def _show_dlvr_detail_panel(rec: dict):
-
     link = rec.get("DETAIL_LINK", "")
     try:
         req_no = link.split(":", 1)[1].split("|", 1)[0].split("?", 1)[0].strip()
@@ -841,15 +811,9 @@ def _show_dlvr_detail_panel(rec: dict):
         st.error("납품요구번호 파싱 실패")
         return
 
-    if st.session_state.get(f"_dlvr_loaded_{req_no}"):
-        header = _cached_dlvr_header(req_no)
-        items = _cached_dlvr_detail(req_no)
-    else:
-        with st.spinner("상세 정보를 불러오는 중..."):
-            header = _cached_dlvr_header(req_no)
-            items = _cached_dlvr_detail(req_no)
-        st.session_state[f"_dlvr_loaded_{req_no}"] = True
-
+    with st.spinner("상세 정보를 불러오는 중..."):
+        header = fetch_dlvr_header(req_no) or {}
+        items = fetch_dlvr_detail(req_no) or []
 
     dlvr_req_dt = _pick(header, "dlvrReqRcptDate", "rcptDate")
     req_name    = _pick(header, "dlvrReqNm", "reqstNm", "ttl") or rec.get('사업명', '')
@@ -1210,15 +1174,7 @@ def render_notice_table(df):
 
     from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
     gb = GridOptionsBuilder.from_dataframe(df_disp)
-    gb.configure_column(
-    "상세",
-    width=60,
-    pinned="left",
-    suppressMenu=True,
-    sortable=False
-)
-
-
+    gb.configure_column("상세", width=80, pinned="left")
     gb.configure_column("__ROW_ID", hide=True)
     gb.configure_selection(selection_mode="single", use_checkbox=False)
     gridOptions = gb.build()
@@ -1246,19 +1202,16 @@ def render_notice_table(df):
     except Exception:
         rec = selected_rows[0]
 
-    # 🔥 선택된 행이 바뀌었을 때만 상세 표시
-    last_rid = st.session_state.get("_last_selected_row_id")
-
-    if last_rid != rid:
+    # ✅ 중복 호출 방지 및 디바운스
+    if (
+        not st.session_state.get("_popup_active", False)
+        and st.session_state.get("_last_selected_row_id") != rid
+    ):
         st.session_state["_last_selected_row_id"] = rid
-
-        # 사용자 의도 명확하게 보이도록 버튼 요구
-        if st.button("🔍 선택한 공고 상세보기", key=f"open_detail_{rid}"):
-            popup_detail_panel(rec)
-
-
+        popup_detail_panel(rec)
 
     return rec
+
 
 
 
@@ -1319,11 +1272,11 @@ def main_page():
                 margin-top:0;
                 margin-bottom:0.3rem;
             ">
-                <strong>공공 입찰정보</strong>(나라장터, K-APT)를<strong> 간편하게 조회</strong>하여,<br>
-                <strong>고효율 기기 수요 현황</strong>을 쉽게 확인하세요.
+                나라장터·K-APT <strong>입찰정보를 간편하게 조회</strong>하고,<br>
+                고효율기기 <strong>수요 현황을 한눈에 확인</strong>하세요.
             </p>
             <p style="
-                font-size:0.7rem;
+                font-size:0.95rem;
                 color:#666;
                 margin-top:0.8rem;
             ">
@@ -1566,9 +1519,6 @@ def data_sync_page():
 
             st.success("데이터 수집이 완료되었습니다. 상단 '공고 조회 및 검색'에서 다시 조회해 주세요.")
             st.session_state["is_updating"] = False
-            st.session_state["page"] = 1   # 목록 첫 페이지로
-            st.session_state.pop("_last_selected_row_id", None)
-
             st.rerun()
 
         except Exception as global_e:
@@ -1824,18 +1774,6 @@ def eers_app():
 
         render_sidebar_sync_caption()
 
-    # =========================================================
-    # [AUTO SYNC URL 분기] - Fly.io Cron 전용
-    # =========================================================
-    query = st.query_params
-
-    if query.get("auto_sync") == "1":
-        st.info("자동수집 실행 중 (Fly Cron)")
-        auto_sync_endpoint()
-        st.stop()   # ✅ UI 라우팅 절대 안 타게 함
-
-
-
     # [페이지 라우팅]
     page = st.session_state.route_page
     if page == "공고 조회 및 검색":
@@ -1850,7 +1788,9 @@ def eers_app():
 
 
 if __name__ == "__main__":
-
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
+    # app 시작 시 한 번만
+    start_auto_update_scheduler()
+
     eers_app()
