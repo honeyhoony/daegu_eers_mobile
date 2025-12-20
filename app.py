@@ -184,6 +184,201 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
         s.close()
 
 
+
+#--------------페이지 네이션--------
+
+PAGE_SIZE = 100
+
+if "notice_page" not in st.session_state:
+    st.session_state.notice_page = 1
+
+@st.cache_data(ttl=300)
+def load_notice_total_count(
+    office: str,
+    source: str,
+    start_date,
+    end_date,
+    keyword: str,
+    only_cert: bool,
+    include_unknown: bool,
+):
+    session = get_db_session()
+    if not session:
+        return 0
+
+    try:
+        query = session.query(func.count(Notice.id))
+
+        # === 필터들 (기존 로직 그대로) ===
+        if office != "전체":
+            query = query.filter(
+                or_(
+                    Notice.assigned_office == office,
+                    Notice.assigned_office.like(f"{office}/%"),
+                    Notice.assigned_office.like(f"%/{office}"),
+                    Notice.assigned_office.like(f"%/{office}/%"),
+                )
+            )
+
+        if source != "전체":
+            query = query.filter(Notice.source_system == source)
+
+        if start_date:
+            query = query.filter(Notice.notice_date >= start_date.isoformat())
+        if end_date:
+            query = query.filter(Notice.notice_date <= end_date.isoformat())
+
+        if keyword:
+            query = query.filter(Notice.project_name.ilike(f"%{keyword}%"))
+
+        if only_cert:
+            query = query.filter(Notice.is_certified == True)
+
+        if not include_unknown:
+            query = query.filter(Notice.assigned_office.isnot(None))
+
+        return query.scalar() or 0
+
+    finally:
+        session.close()
+
+def scroll_to_top():
+    st.markdown(
+        """
+        <script>
+            const el = document.getElementById("page-top");
+            if (el) { el.scrollIntoView({behavior: "instant"}); }
+        </script>
+        """,
+        unsafe_allow_html=True
+    )
+
+
+
+@st.cache_data(ttl=300)
+def load_notice_page(
+    office: str,
+    source: str,
+    start_date,
+    end_date,
+    keyword: str,
+    only_cert: bool,
+    include_unknown: bool,
+    page: int,
+):
+    session = get_db_session()
+    if not session:
+        return pd.DataFrame()
+
+    try:
+        offset = (page - 1) * PAGE_SIZE
+
+        query = session.query(Notice)
+
+        # === 동일 필터 ===
+        if office != "전체":
+            query = query.filter(
+                or_(
+                    Notice.assigned_office == office,
+                    Notice.assigned_office.like(f"{office}/%"),
+                    Notice.assigned_office.like(f"%/{office}"),
+                    Notice.assigned_office.like(f"%/{office}/%"),
+                )
+            )
+
+        if source != "전체":
+            query = query.filter(Notice.source_system == source)
+
+        if start_date:
+            query = query.filter(Notice.notice_date >= start_date.isoformat())
+        if end_date:
+            query = query.filter(Notice.notice_date <= end_date.isoformat())
+
+        if keyword:
+            query = query.filter(Notice.project_name.ilike(f"%{keyword}%"))
+
+        if only_cert:
+            query = query.filter(Notice.is_certified == True)
+
+        if not include_unknown:
+            query = query.filter(Notice.assigned_office.isnot(None))
+
+        rows = (
+            query
+            .order_by(Notice.id.desc())
+            .limit(PAGE_SIZE)
+            .offset(offset)
+            .all()
+        )
+
+        data = []
+        for n in rows:
+            data.append({
+                "id": n.id,
+                "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
+                "사업소": (n.assigned_office or "").replace("/", " "),
+                "단계": n.stage or "",
+                "사업명": n.project_name or "",
+                "기관명": n.client or "",
+                "소재지": n.address or "",
+                "연락처": fmt_phone(n.phone_number or ""),
+                "모델명": n.model_name or "",
+                "수량": n.quantity or 0,
+                "고효율 인증": _normalize_cert(n.is_certified),
+            })
+
+        return pd.DataFrame(data)
+
+    finally:
+        session.close()
+
+    total_cnt = load_notice_total_count(
+        office, source, start_date, end_date, keyword, only_cert, include_unknown
+    )
+
+    total_pages = max(1, math.ceil(total_cnt / PAGE_SIZE))
+
+    st.caption(
+        f"총 **{total_cnt}건** · "
+        f"{st.session_state.notice_page} / {total_pages} 페이지 "
+        f"(페이지당 {PAGE_SIZE}건)"
+    )
+
+    col_prev, col_mid, col_next = st.columns([1, 2, 1])
+
+    with col_prev:
+        if st.button("⬅ 이전", disabled=st.session_state.notice_page <= 1):
+            st.session_state.notice_page -= 1
+            scroll_to_top()
+            st.rerun()
+
+    with col_mid:
+        st.markdown(
+            f"<div style='text-align:center;'><b>"
+            f"{st.session_state.notice_page} / {total_pages}"
+            f"</b></div>",
+            unsafe_allow_html=True
+        )
+
+    with col_next:
+        if st.button("다음 ➡", disabled=st.session_state.notice_page >= total_pages):
+            st.session_state.notice_page += 1
+            scroll_to_top()
+            st.rerun()
+
+    df = load_notice_page(
+        office, source, start_date, end_date, keyword,
+        only_cert, include_unknown,
+        st.session_state.notice_page
+    )
+
+    if df.empty:
+        st.info("표시할 데이터가 없습니다.")
+    else:
+        render_notice_table(df)
+
+        
+
 # 사이드바 표시
 last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
@@ -236,6 +431,8 @@ def fmt_phone(val):
     if len(v) == 11:
         return f"{v[:3]}-{v[3:7]}-{v[7:]}"
     return str(val)
+
+
 
 
 # =========================================================
@@ -1350,7 +1547,7 @@ def main_page():
         with col3_checkbox_2:
             st.checkbox("관할불명 포함", key="include_unknown", on_change=search_data)
 
-    
+
 
     # --------------------------------
     # 데이터 로딩
@@ -1397,6 +1594,7 @@ def calc_progress(df):
     return round(len(filtered) / len(df) * 100, 2)
 
 def data_sync_page():
+    st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
     st.title("🔄 데이터 업데이트")
 
     if not has_sync_access():
@@ -1535,6 +1733,22 @@ def data_sync_page():
             st.session_state["is_updating"] = False
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 @st.cache_data(ttl=300)
 def load_month_total_count(year: int, month: int) -> int:
     session = get_db_session()
@@ -1553,21 +1767,31 @@ def load_month_total_count(year: int, month: int) -> int:
 
 
 @st.cache_data(ttl=300)
-def load_status_day_counts(date_str: str):
+def load_status_day_counts(date_str: str, office_filter: str):
     session = get_db_session()
     if not session:
         return {}, 0
 
     try:
-        rows = (
+        query = (
             session.query(
                 Notice.assigned_office,
                 func.count(Notice.id)
             )
             .filter(Notice.notice_date == date_str)
-            .group_by(Notice.assigned_office)
-            .all()
         )
+
+        if office_filter != "전체":
+            query = query.filter(
+                or_(
+                    Notice.assigned_office == office_filter,
+                    Notice.assigned_office.like(f"{office_filter}/%"),
+                    Notice.assigned_office.like(f"%/{office_filter}"),
+                    Notice.assigned_office.like(f"%/{office_filter}/%"),
+                )
+            )
+
+        rows = query.group_by(Notice.assigned_office).all()
 
         office_counts = {}
         total = 0
@@ -1578,21 +1802,30 @@ def load_status_day_counts(date_str: str):
 
             offices = [o.strip() for o in office.split("/") if o.strip()]
             for o in offices:
+                if office_filter != "전체" and o != office_filter:
+                    continue
+
                 office_counts[o] = office_counts.get(o, 0) + cnt / len(offices)
                 total += cnt / len(offices)
 
-        return (
-            {k: int(v) for k, v in office_counts.items()},
-            int(total)
-        )
+        return {k: int(v) for k, v in office_counts.items()}, int(total)
 
     finally:
         session.close()
 
 
 
+col_filter, _ = st.columns([1, 3])
+with col_filter:
+    status_office = st.selectbox(
+        "사업소 선택",
+        ["전체"] + [o for o in OFFICES if o != "전체"],
+        key="status_office_filter"
+    )
+
 
 def data_status_page():
+    st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
     st.title("📅 데이터 현황 보기")
 
     today = date.today()
@@ -1680,7 +1913,10 @@ def data_status_page():
         st.markdown("---")
         st.markdown(f"### 📌 {sel_date.strftime('%Y-%m-%d')} 공고 현황")
 
-        office_counts, total = load_status_day_counts(date_str)
+        office_counts, total = load_status_day_counts(
+            date_str,
+            status_office
+        )
 
         st.metric("총 건수", f"{total}건")
 
@@ -1797,6 +2033,8 @@ def eers_app():
         # 메뉴 렌더링 함수
         # ---------------------------
         def render_menu_button(name):
+            st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
+
             current = st.session_state.get("route_page", "공고 조회 및 검색")
             btn_type = "primary" if current == name else "secondary"
             if st.button(name, use_container_width=True, type=btn_type, key=f"menu_{name}"):
@@ -1808,6 +2046,8 @@ def eers_app():
         # 메뉴 영역 구성
         # ---------------------------
         st.markdown("### 📌 메인 기능")
+        st.markdown('<div id="page-top"></div>', unsafe_allow_html=True)
+
         render_menu_button("공고 조회 및 검색")
         render_menu_button("데이터 현황")
 
