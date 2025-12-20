@@ -11,6 +11,30 @@ from sqlalchemy import (
 from sqlalchemy.orm import declarative_base, sessionmaker
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+
+def show_db_debug_panel():
+    st.sidebar.markdown("### 🧪 DB 연결 상태")
+
+    try:
+        session = get_db_session()
+        try:
+            db_name = session.execute(text("select current_database()")).scalar()
+            now_db  = session.execute(text("select now()")).scalar()
+            cnt     = session.query(Notice).count()
+
+            st.sidebar.success("DB 연결 OK")
+            st.sidebar.write(f"- DB: {db_name}")
+            st.sidebar.write(f"- DB 시간: {now_db}")
+            st.sidebar.write(f"- notices 건수: {cnt}")
+        finally:
+            session.close()
+
+    except Exception as e:
+        st.sidebar.error("DB 연결 실패")
+        st.sidebar.code(str(e))
+
+
+
 # =========================================================
 # 로거
 # =========================================================

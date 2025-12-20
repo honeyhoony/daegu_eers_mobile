@@ -38,6 +38,138 @@ if "scheduler_started" not in st.session_state:
     start_auto_update_scheduler()
     st.session_state["scheduler_started"] = True
 
+
+
+
+# =========================================================
+# 5) 자동 업데이트 스케줄러 (정상 구조)
+# =========================================================
+import threading
+import time
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
+
+from collect_data import fetch_data_for_stage
+from database import get_meta, set_meta
+
+KST = ZoneInfo("Asia/Seoul")
+
+AUTO_SYNC_TIMES = [
+    (8, 0),   # 오전 8:00
+    (19, 0),  # 오후 7:00
+]
+
+_scheduler_started = False
+_scheduler_lock = threading.Lock()
+
+
+def run_auto_collection_today_and_yesterday():
+    """자동수집: 오늘 + 어제"""
+    today = datetime.now(KST).date()
+    targets = [today - timedelta(days=1), today]
+
+    logger.info(f"[AUTO] 수집 대상 날짜: {targets}")
+
+    for d in targets:
+        ymd = d.strftime("%Y%m%d")
+        for stage in STAGES_CONFIG.values():
+            fetch_data_for_stage(ymd, stage)
+
+    _set_last_sync_datetime_to_meta(datetime.now())
+    logger.info("[AUTO] 자동수집 완료")
+
+
+def auto_scheduler_loop():
+    """매 30초마다 실행 시각 체크"""
+    while True:
+        try:
+            now = datetime.now(KST)
+            run_key = f"{now.date()}_{AUTO_SYNC_HOUR:02d}{AUTO_SYNC_MINUTE:02d}"
+
+            session = get_db_session()
+            try:
+                last_key = get_meta(session, "AUTO_SYNC_RUN_KEY")
+            finally:
+                session.close()
+
+            for h, m in AUTO_SYNC_TIMES:
+                run_key = f"{now.date()}_{h:02d}{m:02d}"
+
+                if (
+                    now.hour == h
+                    and now.minute == m
+                    and last_key != run_key
+                ):
+                    logger.info(f"[AUTO] 자동수집 트리거: {run_key}")
+                    run_auto_collection_today_and_yesterday()
+
+                    session = get_db_session()
+                    try:
+                        set_meta(session, "AUTO_SYNC_RUN_KEY", run_key)
+                    finally:
+                        session.close()
+
+                logger.info(f"[AUTO] 자동수집 트리거: {run_key}")
+                run_auto_collection_today_and_yesterday()
+
+                session = get_db_session()
+                try:
+                    set_meta(session, "AUTO_SYNC_RUN_KEY", run_key)
+                finally:
+                    session.close()
+
+        except Exception as e:
+            logger.exception(f"[AUTO] 스케줄러 오류: {e}")
+
+        time.sleep(30)
+
+
+def start_auto_scheduler_once():
+    """Streamlit rerun 방지용"""
+    global _scheduler_started
+    with _scheduler_lock:
+        if _scheduler_started:
+            return
+        _scheduler_started = True
+
+        t = threading.Thread(target=auto_scheduler_loop, daemon=True)
+        t.start()
+        logger.info(">>> 자동 업데이트 스케줄러 스레드 시작 (1회)")
+
+
+
+
+# =========================================================
+# 내부 자동수집 트리거 (Fly Cron용)
+# =========================================================
+import streamlit as st
+from database import get_meta, set_meta
+
+def auto_sync_endpoint():
+    st.write("AUTO SYNC ENDPOINT")
+
+    run_key = datetime.now().strftime("%Y-%m-%d_%H:%M")
+
+    session = get_db_session()
+    try:
+        last_key = get_meta(session, "AUTO_SYNC_LAST_RUN")
+        if last_key == run_key:
+            st.write("이미 실행됨:", run_key)
+            return
+        set_meta(session, "AUTO_SYNC_LAST_RUN", run_key)
+    finally:
+        session.close()
+
+    run_auto_collection_today_and_yesterday()
+    st.success("자동수집 완료")
+
+
+
+
+
+
+
+
 @st.cache_data(ttl=3600)
 def _cached_dlvr_detail(req_no):
     return fetch_dlvr_detail(req_no)
@@ -615,46 +747,6 @@ def search_data(reset_page: bool = False):
     st.session_state["data_initialized"] = True
 
 
-
-
-# =========================================================
-# 5) 자동 업데이트 스케줄러 (유지)
-# =========================================================
-import os, threading
-from datetime import datetime
-import time
-
-from collect_data import run_all_collections  # ✅ 함수명 교체
-
-def run_collection_job():
-    """자동수집 스케줄러가 호출하는 래퍼 함수"""
-    try:
-        logger.info("[Auto-Sync] Starting collection job...")
-        run_all_collections()  # ✅ collect_all → run_all_collections 변경
-        logger.info("[Auto-Sync] Completed successfully.")
-    except Exception as e:
-        logger.exception("[Auto-Sync Error] %s", e)
-
-
-
-
-    def scheduler_loop():
-        last_run_hour = -1
-        while True:
-            now = datetime.now()
-            if now.hour in [8, 12, 19]:
-                if now.minute == 0 and now.hour != last_run_hour:
-                    print(f"[Auto-Sync] {now}")
-                    try:
-                        # 기존 자동 수집 함수 호출
-                        run_collection_job()
-                    except Exception as e:
-                        print(f"[Auto-Sync Error] {e}")
-                    last_run_hour = now.hour
-            time.sleep(60)
-
-    threading.Thread(target=scheduler_loop, daemon=True).start()
-    print(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
 
 
 # =========================================================
@@ -1786,6 +1878,18 @@ def eers_app():
 
         render_sidebar_sync_caption()
 
+    # =========================================================
+    # [AUTO SYNC URL 분기] - Fly.io Cron 전용
+    # =========================================================
+    query = st.query_params
+
+    if query.get("auto_sync") == "1":
+        st.info("자동수집 실행 중 (Fly Cron)")
+        auto_sync_endpoint()
+        st.stop()   # ✅ UI 라우팅 절대 안 타게 함
+
+
+
     # [페이지 라우팅]
     page = st.session_state.route_page
     if page == "공고 조회 및 검색":
@@ -1800,6 +1904,8 @@ def eers_app():
 
 
 if __name__ == "__main__":
+    start_auto_scheduler_once()
+
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
     eers_app()
