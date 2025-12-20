@@ -20,3 +20,12 @@ primary_region = 'nrt'
   memory = '1gb'
   cpus = 1
   memory_mb = 1024
+
+[cron]
+  [[cron.jobs]]
+    schedule = "0 8 * * *"
+    command = "curl https://daegu-eers-mobile.fly.dev/?auto_sync=1"
+
+  [[cron.jobs]]
+    schedule = "0 19 * * *"
+    command = "curl https://daegu-eers-mobile.fly.dev/?auto_sync=1"

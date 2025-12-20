@@ -1848,7 +1848,6 @@ def eers_app():
 
 
 if __name__ == "__main__":
-    start_auto_scheduler_once()
 
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
