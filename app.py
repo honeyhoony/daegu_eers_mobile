@@ -1612,35 +1612,32 @@ def data_status_page():
                 label = f"{day}"
                 
                 btn_key = f"cal_btn_{selected_office}_{year}_{month}_{day}"
-                
+                                
                 if cols[i].button(label, key=btn_key, type=btn_type, use_container_width=True):
                     if has_data:
                         st.session_state["status_selected_date"] = current_date
 
-                        # ✅ 핵심: 이전 결과/선택 상태 초기화
-                        st.session_state.pop("status_df_cache", None)
+                        # 🔑 반드시 필요
                         st.session_state["_last_selected_row_id"] = None
+                        st.rerun()
                     else:
                         st.toast(f"{month}월 {day}일에는 '{selected_office}' 관련 데이터가 없습니다.")
 
+
     if "status_selected_date" in st.session_state:
         sel_date = st.session_state["status_selected_date"]
-        
-        if sel_date.year == year and sel_date.month == month:
-            st.markdown("---")
-            st.markdown(f"### 📂 {sel_date.strftime('%Y-%m-%d')} 데이터 목록")
-            
-            date_str = sel_date.isoformat()
 
+        if sel_date.year == year and sel_date.month == month:
+            date_str = sel_date.isoformat()
             df_day = load_status_day_data(date_str, selected_office)
 
+            if df_day.empty:
+                st.info("해당 조건의 데이터가 없습니다.")
+            else:
+                rec = render_notice_table(df_day)
+                if rec:
+                    popup_detail_panel(rec)
 
-        if df_day.empty:
-            st.info("해당 조건의 데이터가 없습니다.")
-        else:
-            rec = render_notice_table(df_day)
-            if rec:
-                popup_detail_panel(rec)
 
 
             
