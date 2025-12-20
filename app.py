@@ -177,12 +177,11 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
         s.close()
 
 
-# 사이드바 표시
-last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
-    f"자동수집: 08:00/12:00/19:00\n"
+    f"자동수집: 08:00 / 19:00\n"
     f"마지막 수집: {last_dt or '기록 없음'}"
 )
+
 
 def is_weekend(d: date) -> bool:
     return d.weekday() >= 5
@@ -641,29 +640,28 @@ def run_collection_job():
         logger.exception("[Auto-Sync Error] %s", e)
 
 
-def start_auto_update_scheduler():
-    """자동 업데이트 스케줄러 (단일 실행 가드 포함)"""
-    if os.getenv("RUN_SCHEDULER", "0") != "1":
-        print("스케줄러 실행 스킵 (RUN_SCHEDULER != 1)")
+def start_auto_update_scheduler_once():
+    if st.session_state.get("_scheduler_started", False):
         return
+
+    st.session_state["_scheduler_started"] = True
 
     def scheduler_loop():
         last_run_hour = -1
         while True:
             now = datetime.now()
-            if now.hour in [8, 12, 19]:
+            if now.hour in [8, 19]:
                 if now.minute == 0 and now.hour != last_run_hour:
-                    print(f"[Auto-Sync] {now}")
+                    logger.info(f"[Auto-Sync] {now}")
                     try:
-                        # 기존 자동 수집 함수 호출
                         run_collection_job()
                     except Exception as e:
-                        print(f"[Auto-Sync Error] {e}")
+                        logger.error(f"[Auto-Sync Error] {e}", exc_info=True)
                     last_run_hour = now.hour
             time.sleep(60)
 
     threading.Thread(target=scheduler_loop, daemon=True).start()
-    print(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
+    logger.info(">>> 자동 업데이트 스케줄러 스레드가 시작되었습니다.")
 
 
 # =========================================================
@@ -1830,6 +1828,6 @@ if __name__ == "__main__":
     if engine and not inspect(engine).has_table("notices"):
         Base.metadata.create_all(engine)
     # app 시작 시 한 번만
-    start_auto_update_scheduler()
+    start_auto_update_scheduler_once()
 
     eers_app()
