@@ -188,7 +188,7 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
 last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
     f"자동수집: 08:00/19:00\n"
-    f"마지막 수집: {last_dt or '기록 없음'}"
+    f"\n마지막 수집: {last_dt or '기록 없음'}"
 )
 
 
@@ -1346,7 +1346,7 @@ def main_page():
         # 체크박스 영역
         col3_checkbox_1, col3_checkbox_2, _ = st.columns([1, 1, 3])
         with col3_checkbox_1:
-            st.checkbox("고효율(인증)만 보기", key="only_cert", on_change=search_data)
+            st.checkbox("고효율 인증", key="only_cert", on_change=search_data)
         with col3_checkbox_2:
             st.checkbox("관할불명 포함", key="include_unknown", on_change=search_data)
 
