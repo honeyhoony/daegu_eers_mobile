@@ -1694,30 +1694,6 @@ def data_status_page():
 
 
 
-if "status_selected_date" in st.session_state:
-    sel_date = st.session_state["status_selected_date"]
-    date_str = sel_date.isoformat()
-
-    st.markdown("---")
-    st.markdown(f"### 📊 {sel_date.strftime('%Y-%m-%d')} 사업소별 건수")
-
-    counts = load_status_day_counts(date_str)
-
-    if not counts:
-        st.info("해당 날짜에 데이터가 없습니다.")
-    else:
-        cols = st.columns(4)
-        for i, office in enumerate(OFFICES):
-            if office == "전체":
-                continue
-
-            cnt = counts.get(office, 0)
-            cols[i % 4].metric(
-                label=office,
-                value=f"{cnt}건"
-            )
-
-
 
 # === Dialog & Selection Guard (once) ===
 import streamlit as st
