@@ -7,6 +7,8 @@ import threading
 import calendar
 import logging
 import pandas as pd
+from database import SessionLocal
+
 
 from io import BytesIO
 from datetime import datetime, date, timedelta
