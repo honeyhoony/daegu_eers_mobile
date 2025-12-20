@@ -177,8 +177,10 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
         s.close()
 
 
+# 사이드바 표시
+last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
-    f"자동수집: 08:00 / 19:00\n"
+    f"자동수집: 08:00/12:00/19:00\n"
     f"마지막 수집: {last_dt or '기록 없음'}"
 )
 
