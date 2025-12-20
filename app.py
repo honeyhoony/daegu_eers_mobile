@@ -30,6 +30,25 @@ from collect_data import (
 )
 
 
+@st.cache_data(ttl=1800)  # 30분
+def cached_fetch_kapt_basic(kapt_code: str):
+    return fetch_kapt_basic_info(kapt_code)
+
+@st.cache_data(ttl=1800)
+def cached_fetch_kapt_maintenance(kapt_code: str):
+    return fetch_kapt_maintenance_history(kapt_code)
+
+@st.cache_data(ttl=1800)
+def cached_fetch_dlvr_header(req_no: str):
+    return fetch_dlvr_header(req_no)
+
+@st.cache_data(ttl=1800)
+def cached_fetch_dlvr_detail(req_no: str):
+    return fetch_dlvr_detail(req_no)
+
+
+
+
 
 st.set_page_config(
     page_title="EERS 업무 지원 시스템",
@@ -1610,66 +1629,39 @@ def data_status_page():
                 if cols[i].button(label, key=btn_key, type=btn_type, use_container_width=True):
                     if has_data:
                         st.session_state["status_selected_date"] = current_date
+
+                        # ✅ 핵심: 이전 결과/선택 상태 초기화
+                        st.session_state.pop("status_df_cache", None)
+                        st.session_state["_last_selected_row_id"] = None
                     else:
                         st.toast(f"{month}월 {day}일에는 '{selected_office}' 관련 데이터가 없습니다.")
 
-    if "status_selected_date" in st.session_state:
-        sel_date = st.session_state["status_selected_date"]
-        
-        if sel_date.year == year and sel_date.month == month:
-            st.markdown("---")
-            st.markdown(f"### 📂 {sel_date.strftime('%Y-%m-%d')} 데이터 목록")
-            
-            session = get_db_session()
-            if not session:
-                st.error("DB 연결 오류")
-                return
-            date_str = sel_date.isoformat()
-            
-            query = session.query(Notice).filter(Notice.notice_date == date_str)
-            
-            if selected_office != "전체":
-                query = query.filter(
-                    or_(
-                        Notice.assigned_office == selected_office,
-                        Notice.assigned_office.like(f"{selected_office}/%"),
-                        Notice.assigned_office.like(f"%/{selected_office}"),
-                        Notice.assigned_office.like(f"%/{selected_office}/%"),
-                    )
-                )
-            
-            rows = query.order_by(Notice.id.desc()).all()
-            session.close()
+        if "status_selected_date" in st.session_state:
+            sel_date = st.session_state["status_selected_date"]
+            if sel_date.year == year and sel_date.month == month:
+                date_str = sel_date.isoformat()
+                df_day = load_status_day_data(date_str, selected_office)
 
-            if rows:
-                data = []
-                for n in rows:
-                        data.append({
-                            "id": n.id,
-                            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
-                            "사업소": (n.assigned_office or "").replace("/", " "),
-                            "단계": n.stage or "",
-                            "사업명": n.project_name or "",
-                            "기관명": n.client or "",
-                            "소재지": n.address or "",
-                            "연락처": fmt_phone(n.phone_number or ""),
-                            "모델명": n.model_name or "",
-                            "수량": str(n.quantity or 0),
-                            "고효율 인증 여부": _normalize_cert(n.is_certified),
-                            "공고일자": date_str,
-                            "DETAIL_LINK": n.detail_link or "",
-                            "KAPT_CODE": n.kapt_code or "",
-                            "IS_NEW": False
-                        })
+                if df_day.empty:
+                    st.info("해당 조건의 데이터가 없습니다.")
+                else:
+                    rec = render_notice_table(df_day)
+                    if rec:
+                        popup_detail_panel(rec)
 
-                
-                df_day = pd.DataFrame(data)
-                
-                rec = render_notice_table(df_day)
-                
-                if rec: popup_detail_panel(rec)
-            else:
-                st.info("해당 조건의 데이터가 없습니다.")
+        # 📊 월별 · 사업소별 누적 그래프
+        st.markdown("---")
+        st.subheader("📊 월별 · 사업소별 누적 현황")
+
+        df_month = load_monthly_office_counts(year)
+        if not df_month.empty:
+            pivot = (
+                df_month
+                .pivot_table(index="월", columns="사업소", values="건수", aggfunc="sum")
+                .fillna(0)
+                .sort_index()
+            )
+            st.bar_chart(pivot, use_container_width=True)
 
 
 
@@ -1682,6 +1674,74 @@ if "_popup_active" not in st.session_state:
 
 if "_last_selected_row_id" not in st.session_state:
     st.session_state["_last_selected_row_id"] = None
+
+
+@st.cache_data(ttl=600)
+def load_status_day_data(date_str: str, office: str) -> pd.DataFrame:
+    session = get_db_session()
+    if not session:
+        return pd.DataFrame()
+    try:
+        query = session.query(Notice).filter(Notice.notice_date == date_str)
+        if office != "전체":
+            query = query.filter(
+                or_(
+                    Notice.assigned_office == office,
+                    Notice.assigned_office.like(f"{office}/%"),
+                    Notice.assigned_office.like(f"%/{office}"),
+                    Notice.assigned_office.like(f"%/{office}/%"),
+                )
+            )
+        rows = query.order_by(Notice.id.desc()).all()
+
+        return pd.DataFrame([{
+            "id": n.id,
+            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
+            "사업소": (n.assigned_office or "").replace("/", " "),
+            "단계": n.stage or "",
+            "사업명": n.project_name or "",
+            "기관명": n.client or "",
+            "소재지": n.address or "",
+            "연락처": fmt_phone(n.phone_number or ""),
+            "모델명": n.model_name or "",
+            "수량": str(n.quantity or 0),
+            "고효율 인증 여부": _normalize_cert(n.is_certified),
+            "공고일자": date_str,
+            "DETAIL_LINK": n.detail_link or "",
+            "KAPT_CODE": n.kapt_code or "",
+            "IS_NEW": False
+        } for n in rows])
+    finally:
+        session.close()
+
+
+
+@st.cache_data(ttl=600)
+def load_monthly_office_counts(year: int):
+    session = get_db_session()
+    if not session:
+        return pd.DataFrame()
+    try:
+        rows = (
+            session.query(
+                func.substr(Notice.notice_date, 1, 7).label("월"),
+                Notice.assigned_office,
+                func.count(Notice.id).label("건수")
+            )
+            .filter(Notice.notice_date.like(f"{year}-%"))
+            .group_by("월", Notice.assigned_office)
+            .all()
+        )
+
+        data = []
+        for m, office, cnt in rows:
+            offices = (office or "미지정").split("/")
+            for o in offices:
+                data.append({"월": m, "사업소": o.strip(), "건수": cnt / len(offices)})
+
+        return pd.DataFrame(data)
+    finally:
+        session.close()
 
 
 
