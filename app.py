@@ -1535,113 +1535,187 @@ def data_sync_page():
             st.session_state["is_updating"] = False
 
 
+@st.cache_data(ttl=300)
+def load_month_total_count(year: int, month: int) -> int:
+    session = get_db_session()
+    if not session:
+        return 0
+
+    try:
+        ym = f"{year}-{month:02d}"
+        return (
+            session.query(func.count(Notice.id))
+            .filter(Notice.notice_date.like(f"{ym}-%"))
+            .scalar()
+        ) or 0
+    finally:
+        session.close()
+
+
+@st.cache_data(ttl=300)
+def load_status_day_counts(date_str: str):
+    session = get_db_session()
+    if not session:
+        return {}, 0
+
+    try:
+        rows = (
+            session.query(
+                Notice.assigned_office,
+                func.count(Notice.id)
+            )
+            .filter(Notice.notice_date == date_str)
+            .group_by(Notice.assigned_office)
+            .all()
+        )
+
+        office_counts = {}
+        total = 0
+
+        for office, cnt in rows:
+            if not office:
+                continue
+
+            offices = [o.strip() for o in office.split("/") if o.strip()]
+            for o in offices:
+                office_counts[o] = office_counts.get(o, 0) + cnt / len(offices)
+                total += cnt / len(offices)
+
+        return (
+            {k: int(v) for k, v in office_counts.items()},
+            int(total)
+        )
+
+    finally:
+        session.close()
+
+
+
 
 def data_status_page():
     st.title("📅 데이터 현황 보기")
 
-    col_office, _ = st.columns([1, 2])
-    with col_office:
-        selected_office = st.selectbox("사업소 필터", OFFICES, key="status_office_select")
-
-    @st.cache_data(ttl=300)
-    def get_all_db_notice_dates(target_office):
-        session = get_db_session()
-        if not session: return set()
-        try:
-            query = session.query(Notice.notice_date)
-            
-            if target_office and target_office != "전체":
-                query = query.filter(
-                    or_(
-                        Notice.assigned_office == target_office,
-                        Notice.assigned_office.like(f"{target_office}/%"),
-                        Notice.assigned_office.like(f"%/{target_office}"),
-                        Notice.assigned_office.like(f"%/{target_office}/%"),
-                    )
-                )
-                
-            dates_raw = query.distinct().all()
-            dates = [_as_date(d[0]) for d in dates_raw]
-            
-            today = date.today()
-            return {d for d in dates if d and d <= today}
-        except Exception:
-            return set()
-        finally:
-            session.close()
-
-    data_days_set = get_all_db_notice_dates(selected_office)
-
     today = date.today()
-    
-    if "status_year" not in st.session_state: st.session_state["status_year"] = today.year
-    if "status_month" not in st.session_state: st.session_state["status_month"] = today.month
+
+    # --- 연 / 월 선택 ---
+    if "status_year" not in st.session_state:
+        st.session_state["status_year"] = today.year
+    if "status_month" not in st.session_state:
+        st.session_state["status_month"] = today.month
 
     col_year, col_month = st.columns(2)
     with col_year:
-        year = st.number_input("연도", min_value=2020, max_value=2030, 
-                               value=st.session_state["status_year"], key="status_year_input")
+        year = st.number_input(
+            "연도", 2020, 2030, st.session_state["status_year"]
+        )
     with col_month:
-        month = st.number_input("월", min_value=1, max_value=12, 
-                                value=st.session_state["status_month"], key="status_month_input")
+        month = st.number_input(
+            "월", 1, 12, st.session_state["status_month"]
+        )
 
     st.session_state["status_year"] = year
     st.session_state["status_month"] = month
 
+    # --- 월 누적 건수 ---
+    total_month_cnt = load_month_total_count(year, month)
     st.markdown("---")
-    st.markdown(f"### 🗓️ {year}년 {month}월 ({selected_office})")
+    st.markdown(f"### 📊 {year}년 {month}월 누적 공고 건수")
+    st.metric("총 건수", f"{total_month_cnt}건")
 
-    cal = calendar.Calendar(firstweekday=6)  # 0=월요일, 6=일요일
+    # --- 데이터 존재 날짜 집합 ---
+    @st.cache_data(ttl=300)
+    def get_all_db_notice_dates():
+        session = get_db_session()
+        if not session:
+            return set()
+        try:
+            rows = session.query(Notice.notice_date).distinct().all()
+            return {_as_date(r[0]) for r in rows if r[0]}
+        finally:
+            session.close()
+
+    data_days_set = get_all_db_notice_dates()
+
+    # --- 달력 ---
+    st.markdown("---")
+    st.markdown(f"### 🗓️ {year}년 {month}월")
+
+    cal = calendar.Calendar(firstweekday=6)
     month_days = cal.monthdayscalendar(year, month)
 
     cols = st.columns(7)
-    weekdays = ["일", "월", "화", "수", "목", "금", "토"]
-    for i, w in enumerate(weekdays):
-        cols[i].markdown(f"<div style='text-align:center; font-weight:bold;'>{w}</div>", unsafe_allow_html=True)
+    for i, w in enumerate(["일", "월", "화", "수", "목", "금", "토"]):
+        cols[i].markdown(
+            f"<div style='text-align:center;font-weight:bold;'>{w}</div>",
+            unsafe_allow_html=True
+        )
 
     for week in month_days:
         cols = st.columns(7)
         for i, day in enumerate(week):
             if day == 0:
                 cols[i].write("")
-            else:
-                current_date = date(year, month, day)
-                has_data = current_date in data_days_set
-                
-                btn_type = "primary" if has_data else "secondary"
-                label = f"{day}"
-                
-                btn_key = f"cal_btn_{selected_office}_{year}_{month}_{day}"
-                                
-                if cols[i].button(label, key=btn_key, type=btn_type, use_container_width=True):
-                    if has_data:
-                        st.session_state["status_selected_date"] = current_date
+                continue
 
-                        # 🔑 반드시 필요
-                        st.session_state["_last_selected_row_id"] = None
-                        st.rerun()
-                    else:
-                        st.toast(f"{month}월 {day}일에는 '{selected_office}' 관련 데이터가 없습니다.")
+            current_date = date(year, month, day)
+            has_data = current_date in data_days_set
 
+            if cols[i].button(
+                str(day),
+                key=f"cal_{year}_{month}_{day}",
+                type="primary" if has_data else "secondary",
+                use_container_width=True
+            ):
+                if has_data:
+                    st.session_state["status_selected_date"] = current_date
+                    st.rerun()
+                else:
+                    st.toast("해당 날짜에는 데이터가 없습니다.")
 
+    # --- 날짜 클릭 시 결과 ---
     if "status_selected_date" in st.session_state:
         sel_date = st.session_state["status_selected_date"]
+        date_str = sel_date.isoformat()
 
-        if sel_date.year == year and sel_date.month == month:
-            date_str = sel_date.isoformat()
-            df_day = load_status_day_data(date_str, selected_office)
+        st.markdown("---")
+        st.markdown(f"### 📌 {sel_date.strftime('%Y-%m-%d')} 공고 현황")
 
-            if df_day.empty:
-                st.info("해당 조건의 데이터가 없습니다.")
-            else:
-                rec = render_notice_table(df_day)
-                if rec:
-                    popup_detail_panel(rec)
+        office_counts, total = load_status_day_counts(date_str)
+
+        st.metric("총 건수", f"{total}건")
+
+        if office_counts:
+            cols = st.columns(4)
+            for i, (office, cnt) in enumerate(sorted(office_counts.items())):
+                cols[i % 4].metric(office, f"{cnt}건")
+        else:
+            st.info("해당 날짜에 데이터가 없습니다.")
 
 
 
-            
 
+if "status_selected_date" in st.session_state:
+    sel_date = st.session_state["status_selected_date"]
+    date_str = sel_date.isoformat()
+
+    st.markdown("---")
+    st.markdown(f"### 📊 {sel_date.strftime('%Y-%m-%d')} 사업소별 건수")
+
+    counts = load_status_day_counts(date_str)
+
+    if not counts:
+        st.info("해당 날짜에 데이터가 없습니다.")
+    else:
+        cols = st.columns(4)
+        for i, office in enumerate(OFFICES):
+            if office == "전체":
+                continue
+
+            cnt = counts.get(office, 0)
+            cols[i % 4].metric(
+                label=office,
+                value=f"{cnt}건"
+            )
 
 
 
