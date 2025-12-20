@@ -1,0 +1,3 @@
+echo app1.py >> .gitignore
+git add .gitignore
+git commit -m "ignore app1.py (local test file)"
