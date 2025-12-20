@@ -79,62 +79,6 @@ def run_auto_collection_today_and_yesterday():
     logger.info("[AUTO] 자동수집 완료")
 
 
-def auto_scheduler_loop():
-    """매 30초마다 실행 시각 체크"""
-    while True:
-        try:
-            now = datetime.now(KST)
-            run_key = f"{now.date()}_{AUTO_SYNC_HOUR:02d}{AUTO_SYNC_MINUTE:02d}"
-
-            session = get_db_session()
-            try:
-                last_key = get_meta(session, "AUTO_SYNC_RUN_KEY")
-            finally:
-                session.close()
-
-            for h, m in AUTO_SYNC_TIMES:
-                run_key = f"{now.date()}_{h:02d}{m:02d}"
-
-                if (
-                    now.hour == h
-                    and now.minute == m
-                    and last_key != run_key
-                ):
-                    logger.info(f"[AUTO] 자동수집 트리거: {run_key}")
-                    run_auto_collection_today_and_yesterday()
-
-                    session = get_db_session()
-                    try:
-                        set_meta(session, "AUTO_SYNC_RUN_KEY", run_key)
-                    finally:
-                        session.close()
-
-                logger.info(f"[AUTO] 자동수집 트리거: {run_key}")
-                run_auto_collection_today_and_yesterday()
-
-                session = get_db_session()
-                try:
-                    set_meta(session, "AUTO_SYNC_RUN_KEY", run_key)
-                finally:
-                    session.close()
-
-        except Exception as e:
-            logger.exception(f"[AUTO] 스케줄러 오류: {e}")
-
-        time.sleep(30)
-
-
-def start_auto_scheduler_once():
-    """Streamlit rerun 방지용"""
-    global _scheduler_started
-    with _scheduler_lock:
-        if _scheduler_started:
-            return
-        _scheduler_started = True
-
-        t = threading.Thread(target=auto_scheduler_loop, daemon=True)
-        t.start()
-        logger.info(">>> 자동 업데이트 스케줄러 스레드 시작 (1회)")
 
 
 
@@ -327,7 +271,7 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
 # 사이드바 표시
 last_dt = _get_last_sync_datetime_from_meta()
 st.sidebar.info(
-    f"자동수집: 08:00/12:00/19:00\n"
+    f"자동수집: 08:00/19:00\n"
     f"마지막 수집: {last_dt or '기록 없음'}"
 )
 
@@ -1373,11 +1317,11 @@ def main_page():
                 margin-top:0;
                 margin-bottom:0.3rem;
             ">
-                <strong>공공 입찰정보</strong><strong>(나라장터, K-APT)를</strong><strong> 간편하게 조회</strong>하여,<br>
-                고효율 기기 <strong>수요 현황을 쉽게 확인</strong>하세요.
+                <strong>공공 입찰정보</strong>(나라장터, K-APT)를<strong> 간편하게 조회</strong>하여,<br>
+                <strong>고효율 기기 수요 현황</strong>을 쉽게 확인하세요.
             </p>
             <p style="
-                font-size:0.95rem;
+                font-size:0.7rem;
                 color:#666;
                 margin-top:0.8rem;
             ">
