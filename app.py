@@ -1283,7 +1283,7 @@ def main_page():
                 <strong>사업소별 고효율기기 수요 현황</strong>을 한눈에 파악하세요.
             </p>
             <p style="
-                font-size:0.6rem;
+                font-size:0.9rem;
                 color:#666;
                 margin-top:0.8rem;
             ">
@@ -1643,35 +1643,7 @@ def data_status_page():
                 popup_detail_panel(rec)
 
 
-            if rows:
-                data = []
-                for n in rows:
-                        data.append({
-                            "id": n.id,
-                            "구분": "K-APT" if n.source_system == "K-APT" else "나라장터",
-                            "사업소": (n.assigned_office or "").replace("/", " "),
-                            "단계": n.stage or "",
-                            "사업명": n.project_name or "",
-                            "기관명": n.client or "",
-                            "소재지": n.address or "",
-                            "연락처": fmt_phone(n.phone_number or ""),
-                            "모델명": n.model_name or "",
-                            "수량": str(n.quantity or 0),
-                            "고효율 인증 여부": _normalize_cert(n.is_certified),
-                            "공고일자": date_str,
-                            "DETAIL_LINK": n.detail_link or "",
-                            "KAPT_CODE": n.kapt_code or "",
-                            "IS_NEW": False
-                        })
-
-                
-                df_day = pd.DataFrame(data)
-                
-                rec = render_notice_table(df_day)
-                
-                if rec: popup_detail_panel(rec)
-            else:
-                st.info("해당 조건의 데이터가 없습니다.")
+            
 
 
 
