@@ -1669,205 +1669,140 @@ def load_status_total_counts(year: int, month: int):
 
 
 
+
+
 def data_status_page():
-    st.title("📅 데이터 현황 보기")
-
-    # ===============================
-    # 📱 모바일 / 🖥 PC 분기 CSS
-    # ===============================
-    st.markdown("""
-    <style>
-    /* 모바일: 달력 숨김 */
-    @media (max-width: 480px) {
-        .calendar-area {
-            display: none;
-        }
-    }
-
-    /* PC: 빠른 날짜 선택 숨김 */
-    @media (min-width: 481px) {
-        .quick-date-area {
-            display: none;
-        }
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    st.title("📊 데이터 현황")
 
     today = date.today()
 
-    # --- 연 / 월 선택 ---
-    if "status_year" not in st.session_state:
-        st.session_state["status_year"] = today.year
-    if "status_month" not in st.session_state:
-        st.session_state["status_month"] = today.month
+    # ===============================
+    # 🔍 조회 조건 입력
+    # ===============================
+    st.markdown("### 🔍 조회 조건")
 
-    col_year, col_month = st.columns(2)
-    with col_year:
-        year = st.number_input(
-            "연도", 2020, 2030, st.session_state["status_year"]
+    col1, col2, col3 = st.columns(3)
+
+    # --- 사업소 선택 ---
+    with col1:
+        office = st.selectbox(
+            "사업소",
+            ["전체"] + sorted({
+                o
+                for d in load_all_offices()
+                for o in d.split("/")
+                if o
+            }),
+            index=0
         )
-    with col_month:
-        month = st.number_input(
-            "월", 1, 12, st.session_state["status_month"]
+
+    # --- 월 선택 ---
+    with col2:
+        month = st.date_input(
+            "월",
+            value=date(today.year, today.month, 1),
+            format="YYYY-MM"
         )
 
-    st.session_state["status_year"] = year
-    st.session_state["status_month"] = month
+    # --- 일 선택 ---
+    with col3:
+        day = st.selectbox(
+            "일",
+            ["전체"] + list(range(1, 32)),
+            index=0
+        )
 
-    # --- 월 누적 건수 ---
-    total_month_cnt = load_month_total_count(year, month)
-    st.markdown("---")
-    st.markdown(f"### 📊 {year}년 {month}월 누적 공고 건수")
-    st.metric("총 건수", f"{total_month_cnt}건")
-
-    # --- 데이터 존재 날짜 집합 ---
-    @st.cache_data(ttl=300)
-    def get_all_db_notice_dates():
-        session = get_db_session()
-        if not session:
-            return set()
-        try:
-            rows = session.query(Notice.notice_date).distinct().all()
-            return {_as_date(r[0]) for r in rows if r[0]}
-        finally:
-            session.close()
-
-    data_days_set = get_all_db_notice_dates()
-
+    year = month.year
+    month_num = month.month
 
     # ===============================
-    # 📅 빠른 날짜 선택 (모바일 전용)
+    # 📊 데이터 조회
     # ===============================
-    st.markdown('<div class="quick-date-area">', unsafe_allow_html=True)
-
-    st.markdown("#### 📅 빠른 날짜 선택")
-
-    days_with_data = sorted(
-        d.day for d in data_days_set
-        if d.year == year and d.month == month
-    )
-
-    if days_with_data:
-        cols = st.columns(4)
-        for i, day in enumerate(days_with_data):
-            if cols[i % 4].button(
-                str(day),
-                key=f"quick_{year}_{month}_{day}",
-                use_container_width=True
-            ):
-                st.session_state["status_selected_date"] = date(year, month, day)
-                st.rerun()
+    if day == "전체":
+        office_counts, total = load_status_total_counts(year, month_num)
+        title = f"📊 {year}년 {month_num}월 전체 공고 현황"
     else:
-        st.caption("해당 월에는 데이터가 없습니다.")
+        sel_date = date(year, month_num, int(day)).isoformat()
+        office_counts, total = load_status_day_counts(sel_date)
+        title = f"📅 {year}-{month_num:02d}-{int(day):02d} 공고 현황"
 
-    st.markdown('</div>', unsafe_allow_html=True)
-
-
-
-    # ===============================
-    # 🗓️ 달력 (PC 전용)
-    # ===============================
-    st.markdown('<div class="calendar-area">', unsafe_allow_html=True)
-
-    st.markdown("---")
-    st.markdown(f"### 🗓️ {year}년 {month}월")
-
-    cal = calendar.Calendar(firstweekday=6)
-    month_days = cal.monthdayscalendar(year, month)
-
-    cols = st.columns(7)
-    for i, w in enumerate(["일", "월", "화", "수", "목", "금", "토"]):
-        cols[i].markdown(
-            f"<div style='text-align:center;font-weight:bold;'>{w}</div>",
-            unsafe_allow_html=True
-        )
-
-    for week in month_days:
-        cols = st.columns(7)
-        for i, day in enumerate(week):
-            if day == 0:
-                cols[i].write("")
-                continue
-
-            current_date = date(year, month, day)
-            has_data = current_date in data_days_set
-
-            if cols[i].button(
-                str(day),
-                key=f"cal_{year}_{month}_{day}",
-                type="primary" if has_data else "secondary",
-                use_container_width=True
-            ):
-                if has_data:
-                    st.session_state["status_selected_date"] = current_date
-                    st.rerun()
-                else:
-                    st.toast("해당 날짜에는 데이터가 없습니다.")
-
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    selected_date = st.session_state.get("status_selected_date")
-
-    # --- 날짜 / 전체 공고 현황 ---
-    st.markdown("---")
-
-    selected_date = st.session_state.get("status_selected_date")
-
-    if not selected_date:
-        office_counts, total = load_status_total_counts(year, month)
-        title = f"📊 {year}년 {month}월 전체 공고 현황"
-    else:
-        office_counts, total = load_status_day_counts(selected_date.isoformat())
-        title = f"📅 {selected_date.strftime('%Y-%m-%d')} 공고 현황"
+    # 사업소 필터
+    if office != "전체":
+        office_counts = {
+            k: v for k, v in office_counts.items()
+            if k == office
+        }
+        total = sum(office_counts.values())
 
     # ===============================
-    # 1️⃣ 상단 Hero 카드
+    # 🧱 Hero 카드
     # ===============================
     st.markdown(f"""
     <div style="
-        background: linear-gradient(135deg, #f3f7ff, #e9eef9);
-        border-radius: 18px;
-        padding: 1.3rem 1.5rem;
-        margin-bottom: 1.2rem;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+        background: linear-gradient(135deg, #eef4ff, #ffffff);
+        border-radius: 20px;
+        padding: 1.5rem 1.6rem;
+        margin: 1.2rem 0 1.6rem 0;
+        box-shadow: 0 8px 20px rgba(0,0,0,0.08);
     ">
-    <div style="font-size:0.95rem;color:#555;">
-        {title}
-    </div>
-    <div style="font-size:2.4rem;font-weight:700;color:#003EAA;">
-        {total}건
-    </div>
+        <div style="font-size:0.95rem;color:#555;">
+            {title}
+        </div>
+        <div style="font-size:2.6rem;font-weight:800;color:#003EAA;">
+            {total}건
+        </div>
     </div>
     """, unsafe_allow_html=True)
 
     # ===============================
-    # 2️⃣ 사업소별 카드 Grid
+    # 🏢 사업소별 카드
     # ===============================
-    if office_counts:
-        cols = st.columns(3)
-        for i, (office, cnt) in enumerate(sorted(office_counts.items())):
-            with cols[i % 3]:
-                st.markdown(f"""
-                <div style="
-                    background: #ffffff;
-                    border-radius: 14px;
-                    padding: 0.9rem 1rem;
-                    margin-bottom: 0.9rem;
-                    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-                ">
+    if not office_counts:
+        st.info("표시할 데이터가 없습니다.")
+        return
+
+    cols = st.columns(3)
+
+    for i, (office_name, cnt) in enumerate(sorted(office_counts.items())):
+        with cols[i % 3]:
+            st.markdown(f"""
+            <div style="
+                background: #ffffff;
+                border-radius: 16px;
+                padding: 1rem 1.1rem;
+                margin-bottom: 1rem;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+            ">
                 <div style="font-size:0.85rem;color:#666;">
-                    {office}
+                    {office_name}
                 </div>
-                <div style="font-size:1.6rem;font-weight:700;color:#222;">
+                <div style="font-size:1.8rem;font-weight:700;color:#111;">
                     {cnt}건
                 </div>
-                </div>
-                """, unsafe_allow_html=True)
-    else:
-        st.info("표시할 데이터가 없습니다.")
+            </div>
+            """, unsafe_allow_html=True)
 
 
-# === Dialog & Selection Guard (once) ===
+@st.cache_data(ttl=600)
+def load_all_offices():
+    session = get_db_session()
+    try:
+        rows = session.query(Notice.assigned_office).distinct().all()
+        return [r[0] for r in rows if r[0]]
+    finally:
+        session.close()
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 if "_popup_active" not in st.session_state:
