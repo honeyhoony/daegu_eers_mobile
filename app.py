@@ -1667,6 +1667,24 @@ def load_status_total_counts(year: int, month: int):
     finally:
         session.close()
 
+@st.cache_data(ttl=600)
+def load_office_list():
+    session = get_db_session()
+    try:
+        rows = session.query(Notice.assigned_office).distinct().all()
+        offices = set()
+        for r in rows:
+            if not r[0]:
+                continue
+            for o in r[0].split("/"):
+                if o.strip():
+                    offices.add(o.strip())
+        return sorted(offices)
+    finally:
+        session.close()
+
+
+OFFICE_LIST = load_office_list()
 
 
 
@@ -1681,31 +1699,30 @@ def data_status_page():
     # ===============================
     st.markdown("### 🔍 조회 조건")
 
-    col1, col2, col3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
 
-    # --- 사업소 선택 ---
-    with col1:
+    with c1:
         office = st.selectbox(
             "사업소",
-            ["전체"] + sorted({
-                o
-                for d in load_all_offices()
-                for o in d.split("/")
-                if o
-            }),
+            ["전체"] + OFFICE_LIST,
             index=0
         )
 
-    # --- 월 선택 ---
-    with col2:
-        month = st.date_input(
-            "월",
-            value=date(today.year, today.month, 1),
-            format="YYYY-MM"
+    with c2:
+        year = st.selectbox(
+            "연도",
+            list(range(today.year - 3, today.year + 1)),
+            index=3
         )
 
-    # --- 일 선택 ---
-    with col3:
+    with c3:
+        month_num = st.selectbox(
+            "월",
+            list(range(1, 13)),
+            index=today.month - 1
+        )
+
+    with c4:
         day = st.selectbox(
             "일",
             ["전체"] + list(range(1, 32)),
@@ -1725,6 +1742,7 @@ def data_status_page():
         sel_date = date(year, month_num, int(day)).isoformat()
         office_counts, total = load_status_day_counts(sel_date)
         title = f"📅 {year}-{month_num:02d}-{int(day):02d} 공고 현황"
+
 
     # 사업소 필터
     if office != "전체":
