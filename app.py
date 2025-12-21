@@ -1729,8 +1729,6 @@ def data_status_page():
             index=0
         )
 
-    year = month.year
-    month_num = month.month
 
     # ===============================
     # 📊 데이터 조회

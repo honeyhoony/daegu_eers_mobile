@@ -1,31 +1,36 @@
-# fly.toml app configuration file generated for daegu-eers-mobile on 2025-12-16T23:29:32+09:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
+app = "eers-chatbot"
 
-app = 'daegu-eers-mobile'
-primary_region = 'nrt'
+primary_region = "nrt"
 
 [build]
+  builder = "paketobuildpacks/builder:base"
 
-[http_service]
+[env]
+  PORT = "8501"
+
+[[services]]
   internal_port = 8501
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+  protocol = "tcp"
+
+  [[services.ports]]
+    handlers = ["http"]
+    port = 80
+
+  [[services.ports]]
+    handlers = ["tls", "http"]
+    port = 443
+
+  [services.concurrency]
+    hard_limit = 25
+    soft_limit = 20
+    type = "connections"
 
 [[vm]]
-  memory = '1gb'
-  cpus = 1
-  memory_mb = 1024
+  size = "shared-cpu-1x"
+  memory = "1024"
+  cpu_kind = "shared"
 
-[cron]
-  [[cron.jobs]]
-    schedule = "0 8 * * *"
-    command = "curl https://daegu-eers-mobile.fly.dev/?auto_sync=1"
-
-  [[cron.jobs]]
-    schedule = "0 19 * * *"
-    command = "curl https://daegu-eers-mobile.fly.dev/?auto_sync=1"
+# 자동 중지 방지
+[[restart]]
+  policy = "always"
+  retries = 2
