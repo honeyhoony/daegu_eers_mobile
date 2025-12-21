@@ -18,7 +18,6 @@ from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, DataReturnMode
 import extra_streamlit_components as stx
 
 import os
-import streamlit as st
 from sqlalchemy import text
 from collect_data import (
     fetch_data_for_stage,
@@ -184,11 +183,22 @@ def _set_last_sync_datetime_to_meta(dt: datetime):
         s.close()
 
 
+
 # 사이드바 표시
 last_dt = _get_last_sync_datetime_from_meta()
+
+if last_dt:
+    # timezone 정보 제거 (표시용)
+    if hasattr(last_dt, "tzinfo") and last_dt.tzinfo is not None:
+        last_dt = last_dt.astimezone(None).replace(tzinfo=None)
+
+    last_txt = last_dt.strftime("%Y-%m-%d %H:%M")
+else:
+    last_txt = "기록 없음"
+
 st.sidebar.info(
-    f"자동수집: 08:00/19:00\n"
-    f"\n마지막 수집: {last_dt or '기록 없음'}"
+    "자동수집: 08:00 / 19:00\n\n"
+    f"마지막 수집: {last_txt}"
 )
 
 
@@ -969,7 +979,7 @@ def show_detail_panel(rec: dict):
 # =========================================================
 # 6-1. 팝업(모달) 래퍼 함수
 # =========================================================
-import streamlit as st
+
 
 @st.dialog("상세 정보", width="large")
 def popup_detail_panel(rec: dict):
@@ -1662,6 +1672,27 @@ def load_status_total_counts(year: int, month: int):
 def data_status_page():
     st.title("📅 데이터 현황 보기")
 
+    # ===============================
+    # 📱 모바일 / 🖥 PC 분기 CSS
+    # ===============================
+    st.markdown("""
+    <style>
+    /* 모바일: 달력 숨김 */
+    @media (max-width: 480px) {
+        .calendar-area {
+            display: none;
+        }
+    }
+
+    /* PC: 빠른 날짜 선택 숨김 */
+    @media (min-width: 481px) {
+        .quick-date-area {
+            display: none;
+        }
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
     today = date.today()
 
     # --- 연 / 월 선택 ---
@@ -1703,7 +1734,41 @@ def data_status_page():
 
     data_days_set = get_all_db_notice_dates()
 
-    # --- 달력 ---
+
+    # ===============================
+    # 📅 빠른 날짜 선택 (모바일 전용)
+    # ===============================
+    st.markdown('<div class="quick-date-area">', unsafe_allow_html=True)
+
+    st.markdown("#### 📅 빠른 날짜 선택")
+
+    days_with_data = sorted(
+        d.day for d in data_days_set
+        if d.year == year and d.month == month
+    )
+
+    if days_with_data:
+        cols = st.columns(4)
+        for i, day in enumerate(days_with_data):
+            if cols[i % 4].button(
+                str(day),
+                key=f"quick_{year}_{month}_{day}",
+                use_container_width=True
+            ):
+                st.session_state["status_selected_date"] = date(year, month, day)
+                st.rerun()
+    else:
+        st.caption("해당 월에는 데이터가 없습니다.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+
+    # ===============================
+    # 🗓️ 달력 (PC 전용)
+    # ===============================
+    st.markdown('<div class="calendar-area">', unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown(f"### 🗓️ {year}년 {month}월")
 
@@ -1738,6 +1803,8 @@ def data_status_page():
                     st.rerun()
                 else:
                     st.toast("해당 날짜에는 데이터가 없습니다.")
+
+    st.markdown('</div>', unsafe_allow_html=True)
 
     selected_date = st.session_state.get("status_selected_date")
 
@@ -1801,7 +1868,7 @@ def data_status_page():
 
 
 # === Dialog & Selection Guard (once) ===
-import streamlit as st
+
 
 if "_popup_active" not in st.session_state:
     st.session_state["_popup_active"] = False
