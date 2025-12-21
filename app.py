@@ -197,7 +197,7 @@ else:
     last_txt = "기록 없음"
 
 st.sidebar.info(
-    "자동수집: 08:00 / 19:00\n\n"
+    "자동수집: 08:00 / 19:00\n"
     f"마지막 수집: {last_txt}"
 )
 
@@ -1687,8 +1687,6 @@ def load_office_list():
 OFFICE_LIST = load_office_list()
 
 
-
-
 def data_status_page():
     st.title("📊 데이터 현황")
 
@@ -1729,7 +1727,6 @@ def data_status_page():
             index=0
         )
 
-
     # ===============================
     # 📊 데이터 조회
     # ===============================
@@ -1740,7 +1737,6 @@ def data_status_page():
         sel_date = date(year, month_num, int(day)).isoformat()
         office_counts, total = load_status_day_counts(sel_date)
         title = f"📅 {year}-{month_num:02d}-{int(day):02d} 공고 현황"
-
 
     # 사업소 필터
     if office != "전체":
@@ -1797,6 +1793,11 @@ def data_status_page():
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
+
+
+
+
 
 
 @st.cache_data(ttl=600)
