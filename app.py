@@ -256,7 +256,7 @@ OFFICES = [
     "포항지사", "경산지사", "김천지사", "영천지사", "칠곡지사",
     "성주지사", "청도지사", "북포항지사", "고령지사", "영덕지사",
 ]
-ITEMS_PER_PAGE = 200
+ITEMS_PER_PAGE = 500
 DEFAULT_START_DATE = MIN_SYNC_DATE
 DEFAULT_END_DATE = date.today()
 
