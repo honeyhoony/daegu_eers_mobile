@@ -1126,6 +1126,13 @@ background:#ffffff; margin-bottom:14px; box-shadow:0 1px 2px rgba(0,0,0,0.05); h
 def render_notice_table(df):
     st.markdown("### 📋 공고 목록")
 
+    btn_col1, _ = st.columns([1.5, 8.5])
+    with btn_col1:
+        detail_btn_area = st.empty()
+
+    st.caption("💡 공고를 선택한 후 [선택 공고 상세보기] 버튼을 눌러주세요.")
+
+
     if df.empty:
         st.info("표시할 공고가 없습니다.")
         return None
@@ -1135,7 +1142,6 @@ def render_notice_table(df):
 
     # ✅ 상세 아이콘 추가
     df_disp = df_full.copy()
-    df_disp.insert(0, "상세", "🔍")
 
     # ✅ NEW 표시 로직
     def format_title(row):
@@ -1169,7 +1175,7 @@ def render_notice_table(df):
 
     # ✅ 표시 컬럼 정의 (id 숨기기, APT_CODE 유지)
     visible_cols = [
-        "상세", "순번", "구분", "사업소", "단계", "사업명",
+        "순번", "구분", "사업소", "단계", "사업명",
         "기관명", "소재지", "연락처", "모델명", "수량",
         "고효율 인증 여부", "공고일자", "APT_CODE"
     ]
@@ -1181,9 +1187,11 @@ def render_notice_table(df):
 
     from st_aggrid import GridOptionsBuilder, AgGrid, GridUpdateMode, DataReturnMode
     gb = GridOptionsBuilder.from_dataframe(df_disp)
-    gb.configure_column("상세", width=80, pinned="left")
     gb.configure_column("__ROW_ID", hide=True)
-    gb.configure_selection(selection_mode="single", use_checkbox=False)
+    gb.configure_selection(
+        selection_mode="single",   # 단일 선택 (현재 요구사항에 맞음)
+        use_checkbox=True          # ✅ 이게 핵심
+    )
     gridOptions = gb.build()
 
     grid_response = AgGrid(
@@ -1199,8 +1207,25 @@ def render_notice_table(df):
     )
 
     selected_rows = grid_response.get("selected_rows", [])
-    if not selected_rows:
-        return None
+
+    if selected_rows:
+        rid = int(selected_rows[0]["__ROW_ID"])
+        rec = df_full.loc[rid].to_dict()
+
+        with detail_btn_area:
+            if st.button(
+                "🔍 선택 공고 상세보기",
+                type="primary",
+                key=f"detail_btn_{rid}"
+            ):
+                popup_detail_panel(rec)
+    else:
+        with detail_btn_area:
+            st.button(
+                "🔍 선택 공고 상세보기",
+                disabled=True,
+                key="detail_btn_disabled"
+            )
 
     # ✅ 원본 레코드 복원 (KAPT_CODE 등 숨은 컬럼 포함)
     try:
@@ -1209,13 +1234,6 @@ def render_notice_table(df):
     except Exception:
         rec = selected_rows[0]
 
-    # ✅ 중복 호출 방지 및 디바운스
-    if (
-        not st.session_state.get("_popup_active", False)
-        and st.session_state.get("_last_selected_row_id") != rid
-    ):
-        st.session_state["_last_selected_row_id"] = rid
-        popup_detail_panel(rec)
 
     return rec
 
@@ -1405,7 +1423,18 @@ def data_sync_page():
 
     # --- 마지막 실행 시각 표시 ---
     last_dt = _get_last_sync_datetime_from_meta()
-    last_txt = last_dt.strftime("%Y-%m-%d %H:%M") if last_dt else "기록 없음"
+
+    if last_dt:
+        # 타임존이 있든 없든 무조건 KST 기준으로 통일
+        if last_dt.tzinfo is None:
+            last_dt = last_dt.replace(tzinfo=KST)
+        else:
+            last_dt = last_dt.astimezone(KST)
+
+        last_txt = last_dt.strftime("%Y-%m-%d %H:%M")
+    else:
+        last_txt = "기록 없음"
+
     st.info(f"마지막 API 호출 일시: **{last_txt}**")
     st.markdown("---")
 
@@ -1589,6 +1618,44 @@ def load_status_day_counts(date_str: str):
     finally:
         session.close()
 
+@st.cache_data(ttl=300)
+def load_status_total_counts(year: int, month: int):
+    session = get_db_session()
+    if not session:
+        return {}, 0
+
+    try:
+        ym = f"{year}-{month:02d}"
+
+        rows = (
+            session.query(
+                Notice.assigned_office,
+                func.count(Notice.id)
+            )
+            .filter(Notice.notice_date.like(f"{ym}-%"))
+            .group_by(Notice.assigned_office)
+            .all()
+        )
+
+        office_counts = {}
+        total = 0
+
+        for office, cnt in rows:
+            if not office:
+                continue
+
+            offices = [o.strip() for o in office.split("/") if o.strip()]
+            for o in offices:
+                office_counts[o] = office_counts.get(o, 0) + cnt / len(offices)
+                total += cnt / len(offices)
+
+        return (
+            {k: int(v) for k, v in office_counts.items()},
+            int(total)
+        )
+
+    finally:
+        session.close()
 
 
 
@@ -1672,27 +1739,65 @@ def data_status_page():
                 else:
                     st.toast("해당 날짜에는 데이터가 없습니다.")
 
-    # --- 날짜 클릭 시 결과 ---
-    if "status_selected_date" in st.session_state:
-        sel_date = st.session_state["status_selected_date"]
-        date_str = sel_date.isoformat()
+    selected_date = st.session_state.get("status_selected_date")
 
-        st.markdown("---")
-        st.markdown(f"### 📌 {sel_date.strftime('%Y-%m-%d')} 공고 현황")
+    # --- 날짜 / 전체 공고 현황 ---
+    st.markdown("---")
 
-        office_counts, total = load_status_day_counts(date_str)
+    selected_date = st.session_state.get("status_selected_date")
 
-        st.metric("총 건수", f"{total}건")
+    if not selected_date:
+        office_counts, total = load_status_total_counts(year, month)
+        title = f"📊 {year}년 {month}월 전체 공고 현황"
+    else:
+        office_counts, total = load_status_day_counts(selected_date.isoformat())
+        title = f"📅 {selected_date.strftime('%Y-%m-%d')} 공고 현황"
 
-        if office_counts:
-            cols = st.columns(4)
-            for i, (office, cnt) in enumerate(sorted(office_counts.items())):
-                cols[i % 4].metric(office, f"{cnt}건")
-        else:
-            st.info("해당 날짜에 데이터가 없습니다.")
+    # ===============================
+    # 1️⃣ 상단 Hero 카드
+    # ===============================
+    st.markdown(f"""
+    <div style="
+        background: linear-gradient(135deg, #f3f7ff, #e9eef9);
+        border-radius: 18px;
+        padding: 1.3rem 1.5rem;
+        margin-bottom: 1.2rem;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+    ">
+    <div style="font-size:0.95rem;color:#555;">
+        {title}
+    </div>
+    <div style="font-size:2.4rem;font-weight:700;color:#003EAA;">
+        {total}건
+    </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-
-
+    # ===============================
+    # 2️⃣ 사업소별 카드 Grid
+    # ===============================
+    if office_counts:
+        cols = st.columns(3)
+        for i, (office, cnt) in enumerate(sorted(office_counts.items())):
+            with cols[i % 3]:
+                st.markdown(f"""
+                <div style="
+                    background: #ffffff;
+                    border-radius: 14px;
+                    padding: 0.9rem 1rem;
+                    margin-bottom: 0.9rem;
+                    box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+                ">
+                <div style="font-size:0.85rem;color:#666;">
+                    {office}
+                </div>
+                <div style="font-size:1.6rem;font-weight:700;color:#222;">
+                    {cnt}건
+                </div>
+                </div>
+                """, unsafe_allow_html=True)
+    else:
+        st.info("표시할 데이터가 없습니다.")
 
 
 # === Dialog & Selection Guard (once) ===
